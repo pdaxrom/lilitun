@@ -36,6 +36,7 @@
 #include <sys/time.h>
 #include <errno.h>
 #include <stdarg.h>
+#include "aes.h"
 
 /* buffer for reading from tun/tap interface, must be >= 1500 */
 #define BUFSIZE 2000   
@@ -45,6 +46,32 @@
 
 int debug;
 char *progname;
+
+aes_context aes_ctx;
+uint8 aes_key[256];
+//uint32 aes_key_size;
+
+int init_aes(char *keyfile)
+{
+    FILE *inf = fopen(keyfile, "rb");
+    if (inf) {
+	int size = fread(aes_key, 1, sizeof(aes_key), inf);
+	if ((size != 16) &&
+	    (size != 24) &&
+	    (size != 32)) {
+	    fprintf(stderr, "Key must be 16, 24 or 32 bytes! AES disabled.\n");
+	    return 0;
+	}
+	fclose(inf);
+//	aes_key_size = size;
+	aes_set_key(&aes_ctx, aes_key, size * 8);
+	fprintf(stderr, "Use AES-%d.\n", size * 8);
+    } else {
+	fprintf(stderr, "Can't open key file! AES disabled.\n");
+	return 0;
+    }
+    return 1;
+}
 
 /**************************************************************************
  * tun_alloc: allocates or reconnects to a tun/tap device. The caller     *
@@ -166,6 +193,7 @@ void usage(void) {
   fprintf(stderr, "-i <ifacename>: Name of interface to use (mandatory)\n");
   fprintf(stderr, "-s|-c <serverIP>: run in server mode (-s), or specify server address (-c <serverIP>) (mandatory)\n");
   fprintf(stderr, "-p <port>: port to listen on (if run in server mode) or to connect to (in client mode), default 55555\n");
+  fprintf(stderr, "-k <keyfile>: aes key 16, 24 or 32 bytes\n");
   fprintf(stderr, "-u|-a: use TUN (-u, default) or TAP (-a)\n");
   fprintf(stderr, "-d: outputs debug information while running\n");
   fprintf(stderr, "-h: prints this help text\n");
@@ -179,7 +207,8 @@ int main(int argc, char *argv[]) {
   char if_name[IFNAMSIZ] = "";
   int maxfd;
   uint16_t nread, nwrite, plength;
-  char buffer[BUFSIZE];
+  char buffer[((BUFSIZE - 1) / 16 + 1) * 16];
+  char aes_buffer[((BUFSIZE - 1) / 16 + 1) * 16];
   struct sockaddr_in local, remote;
   char remote_ip[16] = "";            /* dotted quad IP string */
   unsigned short int port = PORT;
@@ -187,11 +216,12 @@ int main(int argc, char *argv[]) {
   socklen_t remotelen;
   int cliserv = -1;    /* must be specified on cmd line */
   unsigned long int tap2net = 0, net2tap = 0;
+  int use_aes = 0;
 
   progname = argv[0];
   
   /* Check command line options */
-  while((option = getopt(argc, argv, "i:sc:p:uahd")) > 0) {
+  while((option = getopt(argc, argv, "i:sc:p:k:uahd")) > 0) {
     switch(option) {
       case 'd':
         debug = 1;
@@ -218,6 +248,9 @@ int main(int argc, char *argv[]) {
       case 'a':
         flags = IFF_TAP;
         break;
+      case 'k':
+	use_aes = init_aes(optarg);
+	break;
       default:
         my_err("Unknown option %c\n", option);
         usage();
@@ -340,12 +373,26 @@ int main(int argc, char *argv[]) {
       /* write length + packet */
       plength = htons(nread);
       nwrite = cwrite(net_fd, (char *)&plength, sizeof(plength));
-      nwrite = cwrite(net_fd, buffer, nread);
+
+      if (use_aes) {
+	int i;
+	int nread_aligned = ((nread - 1) / 16 + 1) * 16;
+	if (nread < nread_aligned) {
+	    memset(buffer + nread, 0, nread_aligned - nread);
+	}
+	for (i = 0; i < nread_aligned; i += 16) {
+	    aes_encrypt(&aes_ctx, (uint8 *)buffer + i, (uint8 *)aes_buffer + i);
+	}
+        nwrite = cwrite(net_fd, aes_buffer, nread_aligned);
+      } else {
+        nwrite = cwrite(net_fd, buffer, nread);
+      }
       
       do_debug("TAP2NET %lu: Written %d bytes to the network\n", tap2net, nwrite);
     }
 
     if(FD_ISSET(net_fd, &rd_set)) {
+    int nread_aligned;
       /* data from the network: read it, and write it to the tun/tap interface. 
        * We need to read the length first, and then the packet */
 
@@ -358,12 +405,26 @@ int main(int argc, char *argv[]) {
 
       net2tap++;
 
+      nread = ntohs(plength);
+
+      if (use_aes) {
+	nread_aligned = ((nread - 1) / 16 + 1) * 16;
+      }
+
       /* read packet */
-      nread = read_n(net_fd, buffer, ntohs(plength));
+      nread = read_n(net_fd, buffer, use_aes?nread_aligned:nread);
       do_debug("NET2TAP %lu: Read %d bytes from the network\n", net2tap, nread);
 
-      /* now buffer[] contains a full packet or frame, write it into the tun/tap interface */ 
-      nwrite = cwrite(tap_fd, buffer, nread);
+      if (use_aes) {
+	int i;
+	for (i = 0; i < nread_aligned; i += 16) {
+	    aes_decrypt(&aes_ctx, (uint8 *)buffer + i, (uint8 *)aes_buffer + i);
+	}
+	nwrite = cwrite(tap_fd, aes_buffer, ntohs(plength));
+      } else {
+	/* now buffer[] contains a full packet or frame, write it into the tun/tap interface */ 
+	nwrite = cwrite(tap_fd, buffer, nread);
+      }
       do_debug("NET2TAP %lu: Written %d bytes to the tap interface\n", net2tap, nwrite);
     }
   }

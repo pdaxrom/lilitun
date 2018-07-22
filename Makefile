@@ -1,18 +1,30 @@
-PREFIX=/usr
+TARGET=lilitun
+
+PREFIX=/opt/lilith
+
 BINDIR=$(PREFIX)/bin
+ETCDIR=$(PREFIX)/etc
 
 CC=gcc
-INSTALL=ginstall
 
-all:	simpletun
+INSTALL=install
+
+all:	$(TARGET)
+
+CFLAGS = -O2 -Wall
+
+OBJS = simpletun.o aes.o
+
+$(TARGET): $(OBJS)
+	$(CC) -o $@ $^
+
 distclean:	clean
 
 clean:
-	rm simpletun
-
+	rm -f $(TARGET) $(OBJS)
 
 install: all
-	$(INSTALL) -D simpletun $(DESTDIR)$(BINDIR)/simpletun
-
-macmask:
-	$(CC) simpletun.c -o simpletun
+	$(INSTALL) -d $(DESTDIR)$(ETCDIR)
+	$(INSTALL) -D -m 755 $(TARGET) $(DESTDIR)$(BINDIR)/$(TARGET)
+	$(INSTALL) -D -m 755 run-client.sh $(DESTDIR)$(BINDIR)/run-client.sh
+	$(INSTALL) -D -m 755 run-server.sh $(DESTDIR)$(BINDIR)/run-server.sh
