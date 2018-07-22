@@ -5,23 +5,28 @@ PREFIX=/opt/lilith
 BINDIR=$(PREFIX)/bin
 ETCDIR=$(PREFIX)/etc
 
-CC=gcc
+CC = gcc
 
-INSTALL=install
+INSTALL = install
 
 all:	$(TARGET)
 
 CFLAGS = -O2 -Wall
 
-OBJS = simpletun.o aes.o
+OBJS = simpletun.o aes.o http.o
+
+http.o: mime.h
 
 $(TARGET): $(OBJS)
 	$(CC) -o $@ $^ -pthread
 
+mime.h:
+	perl create_mime.pl > $@
+
 distclean:	clean
 
 clean:
-	rm -f $(TARGET) $(OBJS)
+	rm -f $(TARGET) $(OBJS) mime.h
 
 install: all
 	$(INSTALL) -d $(DESTDIR)$(ETCDIR)

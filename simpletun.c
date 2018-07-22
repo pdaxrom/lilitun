@@ -37,7 +37,9 @@
 #include <errno.h>
 #include <stdarg.h>
 #include <pthread.h>
+#include "lilitun.h"
 #include "aes.h"
+#include "http.h"
 
 /* buffer for reading from tun/tap interface, must be >= 1500 */
 #define BUFSIZE 2000
@@ -51,13 +53,6 @@ char *progname;
 aes_context aes_ctx;
 uint8 aes_key[256];
 //uint32 aes_key_size;
-
-typedef struct {
-    int net_fd;
-    int tap_fd;
-    int use_aes;
-} server_arg;
-
 
 /**************************************************************************
  * init_aes: AES key initialization                                       *
@@ -311,9 +306,64 @@ int connection_loop(int net_fd, int tap_fd, int use_aes)
  **************************************************************************/
 static void *server_thread(void *arg)
 {
+    char buf[2048];
     server_arg *sarg = (server_arg *) arg;
 
-    connection_loop(sarg->net_fd, sarg->tap_fd, sarg->use_aes);
+    while (1) {
+	int nread = cread(sarg->net_fd, buf, sizeof(buf));
+	do_debug("HTTP read: [\n%s\n]\n", buf);
+	if (!(strncmp(buf, "GET ", 4))) {
+	    int i;
+	    char *normal_path;
+	    struct stat sb;
+	    char url[256];
+
+	    memset(url, 0, sizeof(url));
+	    for (i = 0; (buf[i + 4] > ' ' && buf[i + 4] != '?') && (i < sizeof(url) - 1); i++) {
+		url[i] = buf[i + 4];
+	    }
+	    url[i] = 0;
+	    snprintf(buf, sizeof(buf), "%s/www/%s", sarg->web_prefix, url);
+	    do_debug("--> %s\n", buf);
+	    normal_path = realpath(buf, NULL);
+	    do_debug("Requested url: %s -- %s\n", url, normal_path);
+
+	    if (normal_path) {
+		char *normal_path1;
+		if (stat(normal_path, &sb) == -1) {
+		    do_debug("stat(normal_path) error!");
+		} else {
+		    if ((sb.st_mode & S_IFMT) == S_IFDIR) {
+			snprintf(buf, sizeof(buf), "%s/index.html", normal_path);
+		    } else {
+			strcpy(buf, normal_path);
+		    }
+		}
+		do_debug(">>>> %s\n", buf);
+		normal_path1 = realpath(buf, NULL);
+		do_debug(">>>> %s\n", normal_path1);
+		free(normal_path);
+		normal_path = normal_path1;
+	    }
+	    do_debug("X>>>> %s %s\n", normal_path, sarg->web_prefix);
+
+	    if (normal_path && !strncmp(normal_path, sarg->web_prefix, strlen(sarg->web_prefix))) {
+		do_debug("File found: %s\n", normal_path);
+		send_file(sarg, normal_path);
+	    } else {
+		do_debug("File is not found\n");
+		send_error(sarg, 404, "Not found");
+	    }
+	    if (normal_path) {
+		free(normal_path);
+	    }
+	} else {
+	    send_error(sarg, 501, "Not Implemented");
+	}
+	break;
+    }
+
+    //connection_loop(sarg->net_fd, sarg->tap_fd, sarg->use_aes);
 
     close(sarg->net_fd);
 
@@ -360,11 +410,12 @@ int main(int argc, char *argv[])
     socklen_t remotelen;
     int cliserv = -1;		/* must be specified on cmd line */
     int use_aes = 0;
+    char *web_prefix = "/opt/lilith/www";
 
     progname = argv[0];
 
     /* Check command line options */
-    while ((option = getopt(argc, argv, "i:sc:p:k:uahd")) > 0) {
+    while ((option = getopt(argc, argv, "i:sc:p:k:w:uahd")) > 0) {
 	switch (option) {
 	case 'd':
 	    debug = 1;
@@ -393,6 +444,9 @@ int main(int argc, char *argv[])
 	    break;
 	case 'k':
 	    use_aes = init_aes(optarg);
+	    break;
+	case 'w':
+	    web_prefix = optarg;
 	    break;
 	default:
 	    my_err("Unknown option %c\n", option);
@@ -496,6 +550,7 @@ int main(int argc, char *argv[])
 	    sarg->net_fd = net_fd;
 	    sarg->tap_fd = tap_fd;
 	    sarg->use_aes = use_aes;
+	    sarg->web_prefix = web_prefix;
 
 	    if (pthread_create(&tid, NULL, (void *) &server_thread, (void *) sarg) != 0) {
 		free(sarg);
