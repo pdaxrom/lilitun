@@ -16,7 +16,7 @@ CFLAGS = -O2 -Wall
 OBJS = simpletun.o aes.o
 
 $(TARGET): $(OBJS)
-	$(CC) -o $@ $^
+	$(CC) -o $@ $^ -pthread
 
 distclean:	clean
 

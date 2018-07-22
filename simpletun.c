@@ -36,6 +36,7 @@
 #include <sys/time.h>
 #include <errno.h>
 #include <stdarg.h>
+#include <pthread.h>
 #include "aes.h"
 
 /* buffer for reading from tun/tap interface, must be >= 1500 */
@@ -51,6 +52,16 @@ aes_context aes_ctx;
 uint8 aes_key[256];
 //uint32 aes_key_size;
 
+typedef struct {
+    int net_fd;
+    int tap_fd;
+    int use_aes;
+} server_arg;
+
+
+/**************************************************************************
+ * init_aes: AES key initialization                                       *
+ **************************************************************************/
 int init_aes(char *keyfile)
 {
     FILE *inf = fopen(keyfile, "rb");
@@ -187,6 +198,133 @@ void my_err(char *msg, ...)
 }
 
 /**************************************************************************
+ * connection_loop:                                                       *
+ **************************************************************************/
+int connection_loop(int net_fd, int tap_fd, int use_aes)
+{
+    int maxfd;
+    uint16_t nread, nwrite, plength;
+    char buffer[((BUFSIZE - 1) / 16 + 1) * 16];
+    char aes_buffer[((BUFSIZE - 1) / 16 + 1) * 16];
+    unsigned long int tap2net = 0, net2tap = 0;
+
+    /* use select() to handle two descriptors at once */
+    maxfd = (tap_fd > net_fd) ? tap_fd : net_fd;
+
+    while (1) {
+	int ret;
+	fd_set rd_set;
+
+	FD_ZERO(&rd_set);
+	FD_SET(tap_fd, &rd_set);
+	FD_SET(net_fd, &rd_set);
+
+	ret = select(maxfd + 1, &rd_set, NULL, NULL, NULL);
+
+	if (ret < 0 && errno == EINTR) {
+	    continue;
+	}
+
+	if (ret < 0) {
+	    perror("select()");
+	    return 1;
+	}
+
+	if (FD_ISSET(tap_fd, &rd_set)) {
+	    /* data from tun/tap: just read it and write it to the network */
+
+	    nread = cread(tap_fd, buffer, BUFSIZE);
+
+	    tap2net++;
+	    do_debug("TAP2NET %lu: Read %d bytes from the tap interface\n",
+		     tap2net, nread);
+
+	    /* write length + packet */
+	    plength = htons(nread);
+	    nwrite = cwrite(net_fd, (char *)&plength, sizeof(plength));
+
+	    if (use_aes) {
+		int i;
+		int nread_aligned = ((nread - 1) / 16 + 1) * 16;
+		if (nread < nread_aligned) {
+		    memset(buffer + nread, 0, nread_aligned - nread);
+		}
+		for (i = 0; i < nread_aligned; i += 16) {
+		    aes_encrypt(&aes_ctx, (uint8 *) buffer + i,
+				(uint8 *) aes_buffer + i);
+		}
+		nwrite = cwrite(net_fd, aes_buffer, nread_aligned);
+	    } else {
+		nwrite = cwrite(net_fd, buffer, nread);
+	    }
+
+	    do_debug("TAP2NET %lu: Written %d bytes to the network\n", tap2net,
+		     nwrite);
+	}
+
+	if (FD_ISSET(net_fd, &rd_set)) {
+	    int nread_aligned;
+	    /* data from the network: read it, and write it to the tun/tap interface. 
+	     * We need to read the length first, and then the packet */
+
+	    /* Read length */
+	    nread = read_n(net_fd, (char *)&plength, sizeof(plength));
+	    if (nread == 0) {
+		/* ctrl-c at the other end */
+		break;
+	    }
+
+	    net2tap++;
+
+	    nread = ntohs(plength);
+
+	    if (use_aes) {
+		nread_aligned = ((nread - 1) / 16 + 1) * 16;
+	    }
+
+	    /* read packet */
+	    nread = read_n(net_fd, buffer, use_aes ? nread_aligned : nread);
+	    do_debug("NET2TAP %lu: Read %d bytes from the network\n", net2tap,
+		     nread);
+
+	    if (use_aes) {
+		int i;
+		for (i = 0; i < nread_aligned; i += 16) {
+		    aes_decrypt(&aes_ctx, (uint8 *) buffer + i,
+				(uint8 *) aes_buffer + i);
+		}
+		nwrite = cwrite(tap_fd, aes_buffer, ntohs(plength));
+	    } else {
+		/* now buffer[] contains a full packet or frame, write it into the tun/tap interface */
+		nwrite = cwrite(tap_fd, buffer, nread);
+	    }
+	    do_debug("NET2TAP %lu: Written %d bytes to the tap interface\n",
+		     net2tap, nwrite);
+	}
+    }
+
+    return 0;
+}
+
+/**************************************************************************
+ * server_thread:                                                       *
+ **************************************************************************/
+static void *server_thread(void *arg)
+{
+    server_arg *sarg = (server_arg *) arg;
+
+    connection_loop(sarg->net_fd, sarg->tap_fd, sarg->use_aes);
+
+    close(sarg->net_fd);
+
+    free(sarg);
+
+    do_debug("Server thread finished!\n");
+
+    return arg;
+}
+
+/**************************************************************************
  * usage: prints usage and exits.                                         *
  **************************************************************************/
 void usage(void)
@@ -215,17 +353,12 @@ int main(int argc, char *argv[])
     int tap_fd, option;
     int flags = IFF_TUN;
     char if_name[IFNAMSIZ] = "";
-    int maxfd;
-    uint16_t nread, nwrite, plength;
-    char buffer[((BUFSIZE - 1) / 16 + 1) * 16];
-    char aes_buffer[((BUFSIZE - 1) / 16 + 1) * 16];
     struct sockaddr_in local, remote;
     char remote_ip[16] = "";	/* dotted quad IP string */
     unsigned short int port = PORT;
     int sock_fd, net_fd, optval = 1;
     socklen_t remotelen;
     int cliserv = -1;		/* must be specified on cmd line */
-    unsigned long int tap2net = 0, net2tap = 0;
     int use_aes = 0;
 
     progname = argv[0];
@@ -318,6 +451,8 @@ int main(int argc, char *argv[])
 	do_debug("CLIENT: Connected to server %s\n",
 		 inet_ntoa(remote.sin_addr));
 
+	connection_loop(net_fd, tap_fd, use_aes);
+
     } else {
 	/* Server, wait for connections */
 
@@ -343,113 +478,31 @@ int main(int argc, char *argv[])
 	    exit(1);
 	}
 
-	/* wait for connection request */
-	remotelen = sizeof(remote);
-	memset(&remote, 0, remotelen);
-	if ((net_fd =
-	     accept(sock_fd, (struct sockaddr *)&remote, &remotelen)) < 0) {
-	    perror("accept()");
-	    exit(1);
-	}
+	while (1) {
+	    pthread_t tid;
+	    server_arg *sarg;
+	    /* wait for connection request */
+	    remotelen = sizeof(remote);
+	    memset(&remote, 0, remotelen);
+	    if ((net_fd = accept(sock_fd, (struct sockaddr *)&remote, &remotelen)) < 0) {
+		perror("accept()");
+		exit(1);
+	    }
 
-	do_debug("SERVER: Client connected from %s\n",
+	    do_debug("SERVER: Client connected from %s\n",
 		 inet_ntoa(remote.sin_addr));
-    }
 
-    /* use select() to handle two descriptors at once */
-    maxfd = (tap_fd > net_fd) ? tap_fd : net_fd;
+	    sarg = malloc(sizeof(server_arg));
+	    sarg->net_fd = net_fd;
+	    sarg->tap_fd = tap_fd;
+	    sarg->use_aes = use_aes;
 
-    while (1) {
-	int ret;
-	fd_set rd_set;
-
-	FD_ZERO(&rd_set);
-	FD_SET(tap_fd, &rd_set);
-	FD_SET(net_fd, &rd_set);
-
-	ret = select(maxfd + 1, &rd_set, NULL, NULL, NULL);
-
-	if (ret < 0 && errno == EINTR) {
-	    continue;
-	}
-
-	if (ret < 0) {
-	    perror("select()");
-	    exit(1);
-	}
-
-	if (FD_ISSET(tap_fd, &rd_set)) {
-	    /* data from tun/tap: just read it and write it to the network */
-
-	    nread = cread(tap_fd, buffer, BUFSIZE);
-
-	    tap2net++;
-	    do_debug("TAP2NET %lu: Read %d bytes from the tap interface\n",
-		     tap2net, nread);
-
-	    /* write length + packet */
-	    plength = htons(nread);
-	    nwrite = cwrite(net_fd, (char *)&plength, sizeof(plength));
-
-	    if (use_aes) {
-		int i;
-		int nread_aligned = ((nread - 1) / 16 + 1) * 16;
-		if (nread < nread_aligned) {
-		    memset(buffer + nread, 0, nread_aligned - nread);
-		}
-		for (i = 0; i < nread_aligned; i += 16) {
-		    aes_encrypt(&aes_ctx, (uint8 *) buffer + i,
-				(uint8 *) aes_buffer + i);
-		}
-		nwrite = cwrite(net_fd, aes_buffer, nread_aligned);
-	    } else {
-		nwrite = cwrite(net_fd, buffer, nread);
+	    if (pthread_create(&tid, NULL, (void *) &server_thread, (void *) sarg) != 0) {
+		free(sarg);
+		fprintf(stderr, "pthread_create(server_thread)\n");
 	    }
-
-	    do_debug("TAP2NET %lu: Written %d bytes to the network\n", tap2net,
-		     nwrite);
-	}
-
-	if (FD_ISSET(net_fd, &rd_set)) {
-	    int nread_aligned;
-	    /* data from the network: read it, and write it to the tun/tap interface. 
-	     * We need to read the length first, and then the packet */
-
-	    /* Read length */
-	    nread = read_n(net_fd, (char *)&plength, sizeof(plength));
-	    if (nread == 0) {
-		/* ctrl-c at the other end */
-		break;
-	    }
-
-	    net2tap++;
-
-	    nread = ntohs(plength);
-
-	    if (use_aes) {
-		nread_aligned = ((nread - 1) / 16 + 1) * 16;
-	    }
-
-	    /* read packet */
-	    nread = read_n(net_fd, buffer, use_aes ? nread_aligned : nread);
-	    do_debug("NET2TAP %lu: Read %d bytes from the network\n", net2tap,
-		     nread);
-
-	    if (use_aes) {
-		int i;
-		for (i = 0; i < nread_aligned; i += 16) {
-		    aes_decrypt(&aes_ctx, (uint8 *) buffer + i,
-				(uint8 *) aes_buffer + i);
-		}
-		nwrite = cwrite(tap_fd, aes_buffer, ntohs(plength));
-	    } else {
-		/* now buffer[] contains a full packet or frame, write it into the tun/tap interface */
-		nwrite = cwrite(tap_fd, buffer, nread);
-	    }
-	    do_debug("NET2TAP %lu: Written %d bytes to the tap interface\n",
-		     net2tap, nwrite);
 	}
     }
 
-    return (0);
+    return 0;
 }
