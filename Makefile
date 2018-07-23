@@ -11,14 +11,16 @@ INSTALL = install
 
 all:	$(TARGET)
 
-CFLAGS = -O2 -Wall
+CFLAGS = -Wall -g
+
+LDFLAGS = -pthread -g
 
 OBJS = simpletun.o aes.o http.o
 
 http.o: mime.h
 
 $(TARGET): $(OBJS)
-	$(CC) -o $@ $^ -pthread
+	$(CC) -o $@ $^ $(LDFLAGS)
 
 mime.h:
 	perl create_mime.pl > $@

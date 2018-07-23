@@ -309,6 +309,8 @@ static void *server_thread(void *arg)
     char buf[2048];
     server_arg *sarg = (server_arg *) arg;
 
+    pthread_detach(pthread_self());
+
     while (1) {
 	int nread = cread(sarg->net_fd, buf, sizeof(buf));
 	do_debug("HTTP read: [\n%s\n]\n", buf);
