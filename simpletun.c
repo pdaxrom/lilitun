@@ -40,6 +40,7 @@
 #include "lilitun.h"
 #include "aes.h"
 #include "http.h"
+#include "utils.h"
 
 /* buffer for reading from tun/tap interface, must be >= 1500 */
 #define BUFSIZE 2000
@@ -53,6 +54,9 @@ char *progname;
 aes_context aes_ctx;
 uint8 aes_key[256];
 //uint32 aes_key_size;
+
+char server_id[16] = "lilithvpn 1.0   ";
+char client_id[16] = "   0.1 npvhtilil";
 
 /**************************************************************************
  * init_aes: AES key initialization                                       *
@@ -306,58 +310,94 @@ int connection_loop(int net_fd, int tap_fd, int use_aes)
  **************************************************************************/
 static void *server_thread(void *arg)
 {
-    char buf[2048];
     server_arg *sarg = (server_arg *) arg;
 
     pthread_detach(pthread_self());
 
     while (1) {
-	int nread = cread(sarg->net_fd, buf, sizeof(buf));
-	do_debug("HTTP read: [\n%s\n]\n", buf);
-	if (!(strncmp(buf, "GET ", 4))) {
-	    int i;
-	    char *normal_path;
+	char header[2048];
+	char h_method[16];
+	char h_url[256];
+	char h_spec[16];
+
+	int nread = cread(sarg->net_fd, header, sizeof(header));
+	do_debug("HTTP read: [\n%s\n]\n", header);
+
+	header_get_method(header, h_method, sizeof(h_method));
+	header_get_url(header, h_url, sizeof(h_url));
+	header_get_spec(header, h_spec, sizeof(h_spec));
+	do_debug("METHOD: '%s'\nURL: '%s'\nSPEC: '%s'\n\n", h_method, h_url, h_spec);
+
+	if (!strcmp(h_method, "GET")) {
+	    char *path;
+	    char *file_path;
+	    char *tmp_path;
 	    struct stat sb;
-	    char url[256];
 
-	    memset(url, 0, sizeof(url));
-	    for (i = 0; (buf[i + 4] > ' ' && buf[i + 4] != '?') && (i < sizeof(url) - 1); i++) {
-		url[i] = buf[i + 4];
-	    }
-	    url[i] = 0;
-	    snprintf(buf, sizeof(buf), "%s/www/%s", sarg->web_prefix, url);
-	    do_debug("--> %s\n", buf);
-	    normal_path = realpath(buf, NULL);
-	    do_debug("Requested url: %s -- %s\n", url, normal_path);
+	    path = url_get_path(h_url, NULL, 0);
 
-	    if (normal_path) {
-		char *normal_path1;
-		if (stat(normal_path, &sb) == -1) {
-		    do_debug("stat(normal_path) error!");
+	    tmp_path = malloc(strlen(sarg->web_prefix) + 5 + strlen(path) + 1); // prefix + "/www/" + path + '\0'
+	    tmp_path[0] = 0;
+
+	    strcat(tmp_path, sarg->web_prefix);
+	    strcat(tmp_path, "/www/");
+	    strcat(tmp_path, path);
+
+	    file_path = realpath(tmp_path, NULL);
+
+	    free(tmp_path);
+	    free(path);
+
+	    if (file_path) {
+		if (stat(file_path, &sb) == -1) {
+		    do_debug("stat(file_path) error!");
 		} else {
 		    if ((sb.st_mode & S_IFMT) == S_IFDIR) {
-			snprintf(buf, sizeof(buf), "%s/index.html", normal_path);
-		    } else {
-			strcpy(buf, normal_path);
+			file_path = realloc(file_path, strlen(file_path) + 11); // file_path + "/index.html"
+			strcat(file_path, "/index.html");
 		    }
 		}
-		do_debug(">>>> %s\n", buf);
-		normal_path1 = realpath(buf, NULL);
-		do_debug(">>>> %s\n", normal_path1);
-		free(normal_path);
-		normal_path = normal_path1;
+		tmp_path = realpath(file_path, NULL);
+		free(file_path);
+		file_path = tmp_path;
 	    }
-	    do_debug("X>>>> %s %s\n", normal_path, sarg->web_prefix);
 
-	    if (normal_path && !strncmp(normal_path, sarg->web_prefix, strlen(sarg->web_prefix))) {
-		do_debug("File found: %s\n", normal_path);
-		send_file(sarg, normal_path);
+	    if (file_path && !strncmp(file_path, sarg->web_prefix, strlen(sarg->web_prefix))) {
+		char *mime;
+		do_debug("File found: %s\n", file_path);
+		send_file(sarg, file_path, &mime);
+		do_debug("mime -> %s\n", mime);
+#if 0
+		if (!strncmp(mime, "image/", 6) ||
+		    !strncmp(mime, "audio/", 6) ||
+		    !strncmp(mime, "video/", 6)) {
+		    char tmp[16];
+		    int nsent;
+		    do_debug("Advertise VPN server.\n");
+		    aes_encrypt(&aes_ctx, (uint8_t *)server_id, (uint8_t *) tmp);
+		    if ((nsent = cwrite(sarg->net_fd, tmp, 16)) == 16) {
+			char tmp_dec[16];
+			int nread;
+			do_debug("Sent Advert.\n");
+			if ((nread = cread(sarg->net_fd, tmp, 16)) == 16) {
+			    do_debug("Got answer, decoding.\n");
+			    aes_decrypt(&aes_ctx, (uint8_t *)tmp, (uint8_t *)tmp_dec);
+			    tmp_dec[15] = 0;
+			    do_debug("ANSWER: %s\n", tmp_dec);
+			} else {
+			    do_debug("Seems connection is closed (%d)!\n", nread);
+			}
+		    } else {
+			do_debug("Seems connection is closed (%d)!\n", nsent);
+		    }
+		}
+#endif
 	    } else {
 		do_debug("File is not found\n");
 		send_error(sarg, 404, "Not found");
 	    }
-	    if (normal_path) {
-		free(normal_path);
+	    if (file_path) {
+		free(file_path);
 	    }
 	} else {
 	    send_error(sarg, 501, "Not Implemented");

@@ -6,6 +6,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include "lilitun.h"
+#include "utils.h"
 
 #define BUF_SIZE	4096
 #define BUF_RESP_SIZE	1024
@@ -120,7 +121,7 @@ int send_error(server_arg *s, int e, char *t)
     return 0;
 }
 
-int send_file(server_arg *s, char *f)
+int send_file(server_arg *s, char *f, char **mime)
 {
     char page[BUF_SIZE];
     struct stat sb;
@@ -157,6 +158,10 @@ int send_file(server_arg *s, char *f)
     }
 
     fclose(inf);
+
+    if (mime) {
+	*mime = get_mimetype(f);
+    }
 
     return 0;
 }
