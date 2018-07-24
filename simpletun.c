@@ -127,7 +127,6 @@ int cread(int fd, char *buf, int n)
 
     if ((nread = read(fd, buf, n)) < 0) {
 	perror("Reading data");
-	exit(1);
     }
     return nread;
 }
@@ -143,7 +142,6 @@ int cwrite(int fd, char *buf, int n)
 
     if ((nwrite = write(fd, buf, n)) < 0) {
 	perror("Writing data");
-	exit(1);
     }
     return nwrite;
 }
@@ -158,11 +156,11 @@ int read_n(int fd, char *buf, int n)
     int nread, left = n;
 
     while (left > 0) {
-	if ((nread = cread(fd, buf, left)) == 0) {
-	    return 0;
-	} else {
+	if ((nread = cread(fd, buf, left)) > 0) {
 	    left -= nread;
 	    buf += nread;
+	} else {
+	    return nread;
 	}
     }
     return n;
@@ -271,6 +269,9 @@ int connection_loop(int net_fd, int tap_fd, int use_aes)
 	    if (nread == 0) {
 		/* ctrl-c at the other end */
 		break;
+	    } else if (nread < 0) {
+		do_debug("connection_loop: can't read from net_fd\n");
+		break;
 	    }
 
 	    net2tap++;
@@ -321,6 +322,10 @@ static void *server_thread(void *arg)
 	char h_spec[16];
 
 	int nread = cread(sarg->net_fd, header, sizeof(header));
+	if (nread <= 0) {
+	    do_debug("no more data read in server_thread()\n");
+	    break;
+	}
 	do_debug("HTTP read: [\n%s\n]\n", header);
 
 	header_get_method(header, h_method, sizeof(h_method));
@@ -392,17 +397,35 @@ static void *server_thread(void *arg)
 		    }
 		}
 #endif
+		if (file_path) {
+		    free(file_path);
+		}
 	    } else {
 		do_debug("File is not found\n");
 		send_error(sarg, 404, "Not found");
+		if (file_path) {
+		    free(file_path);
+		}
 	    }
-	    if (file_path) {
-		free(file_path);
+	} else if (!strcmp(h_method, "CONNECT")) {
+	    if (!strcmp(h_url, "/")) {
+		char *resp = http_response_begin(200, "OK");
+		http_response_end(resp);
+
+		if (cwrite(sarg->net_fd, resp, strlen(resp)) != strlen(resp)) {
+		    free(resp);
+		    break;
+		}
+		free(resp);
+		break;
+	    } else {
+		send_error(sarg, 404, "");
 	    }
+	    break;
 	} else {
 	    send_error(sarg, 501, "Not Implemented");
+	    break;
 	}
-	break;
     }
 
     //connection_loop(sarg->net_fd, sarg->tap_fd, sarg->use_aes);

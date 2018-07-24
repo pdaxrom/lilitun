@@ -138,11 +138,22 @@ int send_error(server_arg *s, int e, char *t)
 {
     char path[PATH_MAX];
     char page[BUF_SIZE];
+    struct stat sb;
+
+    snprintf(path, sizeof(path), "%s/wwwresp/%d.html", s->web_prefix, e);
+
+    FILE *inf = fopen(path, "rb");
+
+    if ((stat(path, &sb) == -1) || (!inf)) {
+	do_debug("send_file/stat error!");
+	return send_error(s, 500, "Internal Server Error");
+    }
+
     char *resp = http_response_begin(e, t);
     http_response_add_time_stamp(resp);
     http_response_add_server(resp, s->server_name);
+    http_response_add_content_length(resp, sb.st_size);
     http_response_add_content_type(resp, "text/html; charset=UTF-8");
-    http_response_add_connection(resp, "close");
     http_response_end(resp);
     if (cwrite(s->net_fd, resp, strlen(resp)) != strlen(resp)) {
 	free(resp);
@@ -150,9 +161,6 @@ int send_error(server_arg *s, int e, char *t)
     }
     free(resp);
 
-    snprintf(path, sizeof(path), "%s/wwwresp/%d.html", s->web_prefix, e);
-
-    FILE *inf = fopen(path, "rb");
     if (inf) {
 	int len = fread(page, 1, sizeof(page), inf);
 	fclose(inf);
