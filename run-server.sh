@@ -2,7 +2,7 @@
 
 PREFIX=/opt/lilith
 
-SERVER_PORT=3443
+SERVER_PORT=80
 KEY_FILE=${PREFIX}/etc/key32.dat
 
 IFACE_TUN=lilith0

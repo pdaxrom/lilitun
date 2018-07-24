@@ -41,22 +41,40 @@
 #include "aes.h"
 #include "http.h"
 #include "utils.h"
+#include "getrandom.h"
 
 /* buffer for reading from tun/tap interface, must be >= 1500 */
 #define BUFSIZE 2000
 #define CLIENT 0
 #define SERVER 1
-#define PORT 55555
+#define PORT 80
 
 int debug;
 char *progname;
 
+char server_id[6] = "lilith";
+char client_id[6] = "htilil";
+
 aes_context aes_ctx;
 uint8 aes_key[256];
-//uint32 aes_key_size;
 
-char server_id[16] = "lilithvpn 1.0   ";
-char client_id[16] = "   0.1 npvhtilil";
+/*
+
+ */
+
+void dump16(char *ptr)
+{
+    int i;
+    char tmp[17];
+    tmp[16] = 0;
+
+    fprintf(stderr, "\n-----\n");
+    for (i = 0; i < 16; i++) {
+	fprintf(stderr, "%02X ", (unsigned char)ptr[i]);
+	tmp[i] = (ptr[i] >= 32) ? ptr[i] : '.';
+    }
+    fprintf(stderr, "%s\n-----\n", tmp);
+}
 
 /**************************************************************************
  * init_aes: AES key initialization                                       *
@@ -408,7 +426,8 @@ static void *server_thread(void *arg)
 		}
 	    }
 	} else if (!strcmp(h_method, "CONNECT")) {
-	    if (!strcmp(h_url, "/")) {
+	    if (!strcmp(h_url, "/") && sarg->use_aes) {
+		do_debug("CONNECT to: %s\n", h_url);
 		char *resp = http_response_begin(200, "OK");
 		http_response_end(resp);
 
@@ -417,9 +436,45 @@ static void *server_thread(void *arg)
 		    break;
 		}
 		free(resp);
-		break;
+
+		char tmp[16];
+		char aes_tmp[16];
+		memcpy(tmp, server_id, sizeof(server_id));
+		if (my_getrandom(tmp + sizeof(server_id), sizeof(tmp) - sizeof(server_id), 0) == -1) {
+		    perror("getrandom()");
+		    break;
+		}
+
+		dump16(tmp);
+
+		aes_encrypt(&aes_ctx, (uint8_t *)tmp, (uint8_t *)aes_tmp);
+
+		dump16(aes_tmp);
+
+		if (cwrite(sarg->net_fd, aes_tmp, sizeof(aes_tmp)) != sizeof(aes_tmp)) {
+		    break;
+		}
+
+		nread = cread(sarg->net_fd, aes_tmp, sizeof(aes_tmp));
+		if (nread <= 0) {
+		    do_debug("no data read for client_id\n");
+		    break;
+		}
+
+		dump16(aes_tmp);
+
+		aes_decrypt(&aes_ctx, (uint8_t *)aes_tmp, (uint8_t *)tmp);
+
+		dump16(tmp);
+
+		if (!strncmp(tmp, client_id, sizeof(client_id))) {
+		    do_debug("start vpn connection\n");
+		    connection_loop(sarg->net_fd, sarg->tap_fd, sarg->use_aes);
+		} else {
+		    do_debug("wrong client_id, connection closed\n");
+		}
 	    } else {
-		send_error(sarg, 404, "");
+		send_error(sarg, 403, "Forbidden");
 	    }
 	    break;
 	} else {
@@ -428,7 +483,6 @@ static void *server_thread(void *arg)
 	}
     }
 
-    //connection_loop(sarg->net_fd, sarg->tap_fd, sarg->use_aes);
 
     close(sarg->net_fd);
 
@@ -437,6 +491,92 @@ static void *server_thread(void *arg)
     do_debug("Server thread finished!\n");
 
     return arg;
+}
+
+/**************************************************************************
+ * client_connection:                                                       *
+ **************************************************************************/
+static int client_connection(server_arg *sarg)
+{
+    char header[2048];
+    char h_method[16];
+    char h_url[256];
+    char h_spec[16];
+    static char *req = "CONNECT / HTTP/1.1\n\n";
+
+    if (cwrite(sarg->net_fd, req, strlen(req)) != strlen(req)) {
+	do_debug("can't send data in client_connection()\n");
+	return 1;
+    }
+
+    int nread = cread(sarg->net_fd, header, sizeof(header));
+    if (nread <= 0) {
+	do_debug("no data read in client_connection()\n");
+	return 1;
+    }
+
+    do_debug("HTTP read: [\n%s\n]\n", header);
+
+    header_get_method(header, h_method, sizeof(h_method));
+    header_get_url(header, h_url, sizeof(h_url));
+    header_get_spec(header, h_spec, sizeof(h_spec));
+    do_debug("METHOD: '%s'\nURL: '%s'\nSPEC: '%s'\n\n", h_method, h_url, h_spec);
+
+    if (!strcmp(h_method, "HTTP/1.1") &&
+	!strcmp(h_url, "200") &&
+	!strcmp(h_spec, "OK")) {
+	char tmp[16];
+	char aes_tmp[16];
+
+	char *ptr = strstr(header, "\n\n");
+	if (!ptr) {
+	    do_debug("incomplete CONNECT header\n");
+	    return 1;
+	}
+	ptr += 2;
+	int received = nread - (ptr - header);
+	fprintf(stderr, ">>>> %d\n", received);
+
+	if (received < 16) {
+	    nread = cread(sarg->net_fd, aes_tmp, sizeof(aes_tmp) - received);
+	    if (nread <= 0) {
+		do_debug("no data read in client_connection()\n");
+		return 1;
+	    }
+	} else {
+	    memcpy(aes_tmp, ptr, 16);
+	}
+
+	dump16(aes_tmp);
+
+	aes_decrypt(&aes_ctx, (uint8_t *)aes_tmp, (uint8_t *)tmp);
+
+	dump16(tmp);
+
+	if (!strncmp(tmp, server_id, sizeof(server_id))) {
+	    do_debug("server_id detected!\n");
+	    memcpy(tmp, client_id, sizeof(client_id));
+
+	    dump16(tmp);
+
+	    aes_encrypt(&aes_ctx, (uint8_t *)tmp, (uint8_t *)aes_tmp);
+
+	    dump16(aes_tmp);
+
+	    if (cwrite(sarg->net_fd, aes_tmp, sizeof(aes_tmp)) != sizeof(aes_tmp)) {
+		do_debug("error send client_id\n");
+		return 1;
+	    }
+
+	    do_debug("start vpn connection\n");
+	    connection_loop(sarg->net_fd, sarg->tap_fd, sarg->use_aes);
+	}
+
+    } else {
+	do_debug("Connection refused!\n");
+    }
+
+    return 0;
 }
 
 /**************************************************************************
@@ -576,7 +716,22 @@ int main(int argc, char *argv[])
 	do_debug("CLIENT: Connected to server %s\n",
 		 inet_ntoa(remote.sin_addr));
 
-	connection_loop(net_fd, tap_fd, use_aes);
+	server_arg *sarg = malloc(sizeof(server_arg));
+	sarg->net_fd = net_fd;
+	sarg->tap_fd = tap_fd;
+	sarg->use_aes = use_aes;
+	sarg->server_name = server_name;
+	sarg->web_prefix = web_prefix;
+
+	if (use_aes) {
+	    client_connection(sarg);
+	} else {
+	    fprintf(stderr, "Only secure connection enabled!\n");
+	}
+
+	free(sarg);
+
+	//connection_loop(net_fd, tap_fd, use_aes);
 
     } else {
 	/* Server, wait for connections */

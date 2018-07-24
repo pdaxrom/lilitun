@@ -15,7 +15,7 @@ CFLAGS = -Wall -g
 
 LDFLAGS = -pthread -g
 
-OBJS = simpletun.o aes.o http.o utils.o
+OBJS = simpletun.o aes.o http.o utils.o getrandom.o
 
 http.o: mime.h
 
