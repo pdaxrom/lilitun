@@ -6,7 +6,7 @@ SERVER_ADDR=127.0.0.1
 SERVER_PORT=80
 KEY_FILE=${PREFIX}/etc/key32.dat
 
-IFACE_TUN=lilith0
+IFACE_TUN=lil0
 IPADDR_TUN=10.20.0.2/24
 
 DNS="nameserver 8.8.8.8\n

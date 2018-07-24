@@ -5,7 +5,7 @@ PREFIX=/opt/lilith
 SERVER_PORT=80
 KEY_FILE=${PREFIX}/etc/key32.dat
 
-IFACE_TUN=lilith0
+IFACE_TUN=lil0
 IPADDR_TUN=10.20.0.1/24
 
 ip tuntap add $IFACE_TUN mode tun

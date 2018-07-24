@@ -213,6 +213,155 @@ void my_err(char *msg, ...)
 }
 
 /**************************************************************************
+ * tap2net_loop:                                                       *
+ **************************************************************************/
+static void *tap2net_thread(void *arg)
+{
+    server_arg *sarg = (server_arg *) arg;
+
+    uint16_t nread, nwrite, plength;
+    char buffer[((BUFSIZE - 1) / 16 + 1) * 16];
+    char aes_buffer[((BUFSIZE - 1) / 16 + 1) * 16];
+    unsigned long int tap2net = 0;
+    unsigned long int total = 0;
+
+    while (1) {
+	nread = cread(sarg->tap_fd, buffer, BUFSIZE);
+	if (nread <= 0) {
+	    perror("tun cread()");
+	    break;
+	}
+
+	tap2net++;
+	do_debug("TAP2NET %lu: Read %d bytes from the tap interface\n",
+		 tap2net, nread);
+
+	/* write length + packet */
+	plength = htons(nread);
+	nwrite = cwrite(sarg->net_fd, (char *)&plength, sizeof(plength));
+	if (nwrite != sizeof(plength)) {
+	    do_debug("tap2net_loop(): error write plength\n");
+	    break;
+	}
+
+	total += nwrite;
+
+	if (sarg->use_aes) {
+	    int i;
+	    int nread_aligned = ((nread - 1) / 16 + 1) * 16;
+	    if (nread < nread_aligned) {
+		memset(buffer + nread, 0, nread_aligned - nread);
+	    }
+	    for (i = 0; i < nread_aligned; i += 16) {
+		aes_encrypt(&aes_ctx, (uint8 *) buffer + i,
+			    (uint8 *) aes_buffer + i);
+	    }
+	    nwrite = cwrite(sarg->net_fd, aes_buffer, nread_aligned);
+	    if (nwrite != nread_aligned) {
+		do_debug("tap2net_loop(): error write aes_buffer\n");
+		break;
+	    }
+	} else {
+	    nwrite = cwrite(sarg->net_fd, buffer, nread);
+	    if (nwrite != nread) {
+		do_debug("tap2net_loop(): error write buffer\n");
+		break;
+	    }
+	}
+
+	total += nwrite;
+
+	do_debug("TAP2NET %lu: Written %d bytes to the network\n", tap2net,
+		 nwrite);
+    }
+
+    do_debug("Total written to network: %lu\n", total);
+
+    return NULL;
+}
+
+/**************************************************************************
+ * tap2net_loop:                                                       *
+ **************************************************************************/
+static void *net2tap_thread(void *arg)
+{
+    server_arg *sarg = (server_arg *) arg;
+
+    uint16_t nread, nwrite, plength;
+    char buffer[((BUFSIZE - 1) / 16 + 1) * 16];
+    char aes_buffer[((BUFSIZE - 1) / 16 + 1) * 16];
+    unsigned long int net2tap = 0;
+    unsigned long int total = 0;
+
+    while (1) {
+	int nread_aligned;
+	/* data from the network: read it, and write it to the tun/tap interface. 
+	 * We need to read the length first, and then the packet */
+
+	/* Read length */
+	nread = read_n(sarg->net_fd, (char *)&plength, sizeof(plength));
+	if (nread == 0) {
+	    /* ctrl-c at the other end */
+	    break;
+	} else if (nread < 0) {
+	    do_debug("connection_loop: can't read length from net_fd\n");
+	    break;
+	}
+
+	total += nread;
+
+	net2tap++;
+
+	nread = ntohs(plength);
+
+	if (sarg->use_aes) {
+	    nread_aligned = ((nread - 1) / 16 + 1) * 16;
+	}
+
+	/* read packet */
+	nread =
+	    read_n(sarg->net_fd, buffer,
+		   sarg->use_aes ? nread_aligned : nread);
+	do_debug("NET2TAP %lu: Read %d bytes from the network\n", net2tap,
+		 nread);
+
+	if (nread <= 0) {
+	    do_debug("connection_loop: can't read from net_fd\n");
+	    break;
+	}
+
+	total += nread;
+
+	if (sarg->use_aes) {
+	    int i;
+	    for (i = 0; i < nread_aligned; i += 16) {
+		aes_decrypt(&aes_ctx, (uint8 *) buffer + i,
+			    (uint8 *) aes_buffer + i);
+	    }
+	    nwrite = cwrite(sarg->tap_fd, aes_buffer, nread_aligned);
+	    if (nwrite != nread_aligned) {
+		do_debug("net2tap_loop(): error write aes_buffer\n");
+		break;
+	    }
+	} else {
+	    /* now buffer[] contains a full packet or frame, write it into the tun/tap interface */
+	    nwrite = cwrite(sarg->tap_fd, buffer, nread);
+	    if (nwrite != nread) {
+		do_debug("net2tap_loop(): error write buffer\n");
+		break;
+	    }
+	}
+
+	do_debug("NET2TAP %lu: Written %d bytes to the tap interface\n",
+		 net2tap, nwrite);
+    }
+
+    do_debug("Total read from network: %lu\n", total);
+
+    return NULL;
+}
+
+/**************************************************************************
  * connection_loop:                                                       *
  **************************************************************************/
 int connection_loop(int net_fd, int tap_fd, int use_aes)
@@ -349,7 +498,8 @@ static void *server_thread(void *arg)
 	header_get_method(header, h_method, sizeof(h_method));
 	header_get_url(header, h_url, sizeof(h_url));
 	header_get_spec(header, h_spec, sizeof(h_spec));
-	do_debug("METHOD: '%s'\nURL: '%s'\nSPEC: '%s'\n\n", h_method, h_url, h_spec);
+	do_debug("METHOD: '%s'\nURL: '%s'\nSPEC: '%s'\n\n", h_method, h_url,
+		 h_spec);
 
 	if (!strcmp(h_method, "GET")) {
 	    char *path;
@@ -359,7 +509,7 @@ static void *server_thread(void *arg)
 
 	    path = url_get_path(h_url, NULL, 0);
 
-	    tmp_path = malloc(strlen(sarg->web_prefix) + 5 + strlen(path) + 1); // prefix + "/www/" + path + '\0'
+	    tmp_path = malloc(strlen(sarg->web_prefix) + 5 + strlen(path) + 1);	// prefix + "/www/" + path + '\0'
 	    tmp_path[0] = 0;
 
 	    strcat(tmp_path, sarg->web_prefix);
@@ -376,7 +526,7 @@ static void *server_thread(void *arg)
 		    do_debug("stat(file_path) error!");
 		} else {
 		    if ((sb.st_mode & S_IFMT) == S_IFDIR) {
-			file_path = realloc(file_path, strlen(file_path) + 11); // file_path + "/index.html"
+			file_path = realloc(file_path, strlen(file_path) + 11);	// file_path + "/index.html"
 			strcat(file_path, "/index.html");
 		    }
 		}
@@ -385,36 +535,13 @@ static void *server_thread(void *arg)
 		file_path = tmp_path;
 	    }
 
-	    if (file_path && !strncmp(file_path, sarg->web_prefix, strlen(sarg->web_prefix))) {
+	    if (file_path
+		&& !strncmp(file_path, sarg->web_prefix,
+			    strlen(sarg->web_prefix))) {
 		char *mime;
 		do_debug("File found: %s\n", file_path);
 		send_file(sarg, file_path, &mime);
 		do_debug("mime -> %s\n", mime);
-#if 0
-		if (!strncmp(mime, "image/", 6) ||
-		    !strncmp(mime, "audio/", 6) ||
-		    !strncmp(mime, "video/", 6)) {
-		    char tmp[16];
-		    int nsent;
-		    do_debug("Advertise VPN server.\n");
-		    aes_encrypt(&aes_ctx, (uint8_t *)server_id, (uint8_t *) tmp);
-		    if ((nsent = cwrite(sarg->net_fd, tmp, 16)) == 16) {
-			char tmp_dec[16];
-			int nread;
-			do_debug("Sent Advert.\n");
-			if ((nread = cread(sarg->net_fd, tmp, 16)) == 16) {
-			    do_debug("Got answer, decoding.\n");
-			    aes_decrypt(&aes_ctx, (uint8_t *)tmp, (uint8_t *)tmp_dec);
-			    tmp_dec[15] = 0;
-			    do_debug("ANSWER: %s\n", tmp_dec);
-			} else {
-			    do_debug("Seems connection is closed (%d)!\n", nread);
-			}
-		    } else {
-			do_debug("Seems connection is closed (%d)!\n", nsent);
-		    }
-		}
-#endif
 		if (file_path) {
 		    free(file_path);
 		}
@@ -440,18 +567,21 @@ static void *server_thread(void *arg)
 		char tmp[16];
 		char aes_tmp[16];
 		memcpy(tmp, server_id, sizeof(server_id));
-		if (my_getrandom(tmp + sizeof(server_id), sizeof(tmp) - sizeof(server_id), 0) == -1) {
+		if (my_getrandom
+		    (tmp + sizeof(server_id), sizeof(tmp) - sizeof(server_id),
+		     0) == -1) {
 		    perror("getrandom()");
 		    break;
 		}
 
 		dump16(tmp);
 
-		aes_encrypt(&aes_ctx, (uint8_t *)tmp, (uint8_t *)aes_tmp);
+		aes_encrypt(&aes_ctx, (uint8_t *) tmp, (uint8_t *) aes_tmp);
 
 		dump16(aes_tmp);
 
-		if (cwrite(sarg->net_fd, aes_tmp, sizeof(aes_tmp)) != sizeof(aes_tmp)) {
+		if (cwrite(sarg->net_fd, aes_tmp, sizeof(aes_tmp)) !=
+		    sizeof(aes_tmp)) {
 		    break;
 		}
 
@@ -463,13 +593,31 @@ static void *server_thread(void *arg)
 
 		dump16(aes_tmp);
 
-		aes_decrypt(&aes_ctx, (uint8_t *)aes_tmp, (uint8_t *)tmp);
+		aes_decrypt(&aes_ctx, (uint8_t *) aes_tmp, (uint8_t *) tmp);
 
 		dump16(tmp);
 
 		if (!strncmp(tmp, client_id, sizeof(client_id))) {
 		    do_debug("start vpn connection\n");
-		    connection_loop(sarg->net_fd, sarg->tap_fd, sarg->use_aes);
+//                  connection_loop(sarg->net_fd, sarg->tap_fd, sarg->use_aes);
+		    pthread_t net2tap_tid;
+		    pthread_t tap2net_tid;
+
+		    if (pthread_create
+			(&net2tap_tid, NULL, (void *)&net2tap_thread,
+			 (void *)sarg)
+			!= 0) {
+			fprintf(stderr, "pthread_create(net2tap_thread)\n");
+		    } else
+			if (pthread_create
+			    (&tap2net_tid, NULL, (void *)&tap2net_thread,
+			     (void *)sarg)
+			    != 0) {
+			fprintf(stderr, "pthread_create(tap2net_thread)\n");
+		    } else {
+			(void)pthread_join(net2tap_tid, NULL);
+			(void)pthread_join(tap2net_tid, NULL);
+		    }
 		} else {
 		    do_debug("wrong client_id, connection closed\n");
 		}
@@ -483,7 +631,6 @@ static void *server_thread(void *arg)
 	}
     }
 
-
     close(sarg->net_fd);
 
     free(sarg);
@@ -496,7 +643,7 @@ static void *server_thread(void *arg)
 /**************************************************************************
  * client_connection:                                                       *
  **************************************************************************/
-static int client_connection(server_arg *sarg)
+static int client_connection(server_arg * sarg)
 {
     char header[2048];
     char h_method[16];
@@ -520,11 +667,11 @@ static int client_connection(server_arg *sarg)
     header_get_method(header, h_method, sizeof(h_method));
     header_get_url(header, h_url, sizeof(h_url));
     header_get_spec(header, h_spec, sizeof(h_spec));
-    do_debug("METHOD: '%s'\nURL: '%s'\nSPEC: '%s'\n\n", h_method, h_url, h_spec);
+    do_debug("METHOD: '%s'\nURL: '%s'\nSPEC: '%s'\n\n", h_method, h_url,
+	     h_spec);
 
     if (!strcmp(h_method, "HTTP/1.1") &&
-	!strcmp(h_url, "200") &&
-	!strcmp(h_spec, "OK")) {
+	!strcmp(h_url, "200") && !strcmp(h_spec, "OK")) {
 	char tmp[16];
 	char aes_tmp[16];
 
@@ -549,7 +696,7 @@ static int client_connection(server_arg *sarg)
 
 	dump16(aes_tmp);
 
-	aes_decrypt(&aes_ctx, (uint8_t *)aes_tmp, (uint8_t *)tmp);
+	aes_decrypt(&aes_ctx, (uint8_t *) aes_tmp, (uint8_t *) tmp);
 
 	dump16(tmp);
 
@@ -559,17 +706,34 @@ static int client_connection(server_arg *sarg)
 
 	    dump16(tmp);
 
-	    aes_encrypt(&aes_ctx, (uint8_t *)tmp, (uint8_t *)aes_tmp);
+	    aes_encrypt(&aes_ctx, (uint8_t *) tmp, (uint8_t *) aes_tmp);
 
 	    dump16(aes_tmp);
 
-	    if (cwrite(sarg->net_fd, aes_tmp, sizeof(aes_tmp)) != sizeof(aes_tmp)) {
+	    if (cwrite(sarg->net_fd, aes_tmp, sizeof(aes_tmp)) !=
+		sizeof(aes_tmp)) {
 		do_debug("error send client_id\n");
 		return 1;
 	    }
 
 	    do_debug("start vpn connection\n");
-	    connection_loop(sarg->net_fd, sarg->tap_fd, sarg->use_aes);
+//          connection_loop(sarg->net_fd, sarg->tap_fd, sarg->use_aes);
+	    pthread_t net2tap_tid;
+	    pthread_t tap2net_tid;
+
+	    if (pthread_create
+		(&net2tap_tid, NULL, (void *)&net2tap_thread, (void *)sarg)
+		!= 0) {
+		fprintf(stderr, "pthread_create(net2tap_thread)\n");
+	    } else
+		if (pthread_create
+		    (&tap2net_tid, NULL, (void *)&tap2net_thread, (void *)sarg)
+		    != 0) {
+		fprintf(stderr, "pthread_create(tap2net_thread)\n");
+	    } else {
+		(void)pthread_join(net2tap_tid, NULL);
+		(void)pthread_join(tap2net_tid, NULL);
+	    }
 	}
 
     } else {
@@ -598,7 +762,8 @@ void usage(void)
     fprintf(stderr, "-k <keyfile>: aes key 16, 24 or 32 bytes\n");
     fprintf(stderr, "-u|-a: use TUN (-u, default) or TAP (-a)\n");
     fprintf(stderr, "-w: path to web directories (/opt/lilith by default)\n");
-    fprintf(stderr, "-n: web server name (Apache/2.4.18 (Ubuntu) by default)\n");
+    fprintf(stderr,
+	    "-n: web server name (Apache/2.4.18 (Ubuntu) by default)\n");
     fprintf(stderr, "-d: outputs debug information while running\n");
     fprintf(stderr, "-h: prints this help text\n");
     exit(1);
@@ -764,13 +929,15 @@ int main(int argc, char *argv[])
 	    /* wait for connection request */
 	    remotelen = sizeof(remote);
 	    memset(&remote, 0, remotelen);
-	    if ((net_fd = accept(sock_fd, (struct sockaddr *)&remote, &remotelen)) < 0) {
+	    if ((net_fd =
+		 accept(sock_fd, (struct sockaddr *)&remote,
+			&remotelen)) < 0) {
 		perror("accept()");
 		exit(1);
 	    }
 
 	    do_debug("SERVER: Client connected from %s\n",
-		 inet_ntoa(remote.sin_addr));
+		     inet_ntoa(remote.sin_addr));
 
 	    sarg = malloc(sizeof(server_arg));
 	    sarg->net_fd = net_fd;
@@ -779,7 +946,9 @@ int main(int argc, char *argv[])
 	    sarg->server_name = server_name;
 	    sarg->web_prefix = web_prefix;
 
-	    if (pthread_create(&tid, NULL, (void *) &server_thread, (void *) sarg) != 0) {
+	    if (pthread_create
+		(&tid, NULL, (void *)&server_thread, (void *)sarg)
+		!= 0) {
 		free(sarg);
 		fprintf(stderr, "pthread_create(server_thread)\n");
 	    }

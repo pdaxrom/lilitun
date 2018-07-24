@@ -25,7 +25,8 @@ char *http_response_begin(int status, char *reason)
 {
     char *resp = malloc(BUF_RESP_SIZE);
     if (resp)
-    snprintf(resp, BUF_RESP_SIZE, "%s %d %s\n", http_version, status, reason);
+	snprintf(resp, BUF_RESP_SIZE, "%s %d %s\n", http_version, status,
+		 reason);
 
     return resp;
 }
@@ -44,7 +45,8 @@ char *http_response_add_time_stamp(char *resp)
     }
 
     char *ptr = resp + strlen(resp);
-    strftime(ptr, BUF_RESP_SIZE - strlen(resp), "Date: %a, %d %b %Y %T %Z\n", tmp);
+    strftime(ptr, BUF_RESP_SIZE - strlen(resp), "Date: %a, %d %b %Y %T %Z\n",
+	     tmp);
 
     return resp;
 }
@@ -57,7 +59,7 @@ char *http_response_add_server(char *resp, char *server)
     return resp;
 }
 
-char *http_response_add_modtime_stamp(char *resp, time_t *t)
+char *http_response_add_modtime_stamp(char *resp, time_t * t)
 {
     struct tm *tmp;
 
@@ -69,7 +71,8 @@ char *http_response_add_modtime_stamp(char *resp, time_t *t)
     }
 
     char *ptr = resp + strlen(resp);
-    strftime(ptr, BUF_RESP_SIZE - strlen(resp), "Last-Modified: %a, %d %b %Y %T %Z\n", tmp);
+    strftime(ptr, BUF_RESP_SIZE - strlen(resp),
+	     "Last-Modified: %a, %d %b %Y %T %Z\n", tmp);
 
     return resp;
 }
@@ -85,7 +88,8 @@ char *http_response_add_content_type(char *resp, char *mime)
 char *http_response_add_content_length(char *resp, size_t length)
 {
     char *ptr = resp + strlen(resp);
-    snprintf(ptr, BUF_RESP_SIZE - strlen(resp), "Content-Length: %lu\n", length);
+    snprintf(ptr, BUF_RESP_SIZE - strlen(resp), "Content-Length: %lu\n",
+	     length);
 
     return resp;
 }
@@ -106,10 +110,12 @@ char *http_response_add_accept_ranges(char *resp)
     return resp;
 }
 
-char *http_response_add_range(char *resp, size_t from, size_t to, size_t length)
+char *http_response_add_range(char *resp, size_t from, size_t to,
+			      size_t length)
 {
     char *ptr = resp + strlen(resp);
-    snprintf(ptr, BUF_RESP_SIZE - strlen(resp), "Content-Range: bytes %lu-%lu/%lu\n", from, to, length);
+    snprintf(ptr, BUF_RESP_SIZE - strlen(resp),
+	     "Content-Range: bytes %lu-%lu/%lu\n", from, to, length);
 
     return resp;
 }
@@ -134,7 +140,7 @@ char *get_mimetype(char *file)
     return "application/octet-stream";
 }
 
-int send_error(server_arg *s, int e, char *t)
+int send_error(server_arg * s, int e, char *t)
 {
     char path[PATH_MAX];
     char page[BUF_SIZE];
@@ -164,7 +170,7 @@ int send_error(server_arg *s, int e, char *t)
     if (inf) {
 	int len = fread(page, 1, sizeof(page), inf);
 	fclose(inf);
-	if ( len > 0) {
+	if (len > 0) {
 	    if (cwrite(s->net_fd, page, len) != len) {
 		return 1;
 	    }
@@ -176,7 +182,7 @@ int send_error(server_arg *s, int e, char *t)
     return 0;
 }
 
-int send_file(server_arg *s, char *f, char **mime)
+int send_file(server_arg * s, char *f, char **mime)
 {
     char page[BUF_SIZE];
     struct stat sb;
