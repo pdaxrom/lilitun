@@ -5,6 +5,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <time.h>
 #include "lilitun.h"
 #include "utils.h"
 
@@ -25,6 +26,50 @@ char *http_response_begin(int status, char *reason)
     char *resp = malloc(BUF_RESP_SIZE);
     if (resp)
     snprintf(resp, BUF_RESP_SIZE, "%s %d %s\n", http_version, status, reason);
+
+    return resp;
+}
+
+char *http_response_add_time_stamp(char *resp)
+{
+    time_t t;
+    struct tm *tmp;
+
+    t = time(NULL);
+    tmp = localtime(&t);
+
+    if (tmp == NULL) {
+	perror("localtime");
+	return resp;
+    }
+
+    char *ptr = resp + strlen(resp);
+    strftime(ptr, BUF_RESP_SIZE - strlen(resp), "Date: %a, %d %b %Y %T %Z\n", tmp);
+
+    return resp;
+}
+
+char *http_response_add_server(char *resp, char *server)
+{
+    char *ptr = resp + strlen(resp);
+    snprintf(ptr, BUF_RESP_SIZE - strlen(resp), "Server: %s\n", server);
+
+    return resp;
+}
+
+char *http_response_add_modtime_stamp(char *resp, time_t *t)
+{
+    struct tm *tmp;
+
+    tmp = localtime(t);
+
+    if (tmp == NULL) {
+	perror("localtime");
+	return resp;
+    }
+
+    char *ptr = resp + strlen(resp);
+    strftime(ptr, BUF_RESP_SIZE - strlen(resp), "Last-Modified: %a, %d %b %Y %T %Z\n", tmp);
 
     return resp;
 }
@@ -94,6 +139,8 @@ int send_error(server_arg *s, int e, char *t)
     char path[PATH_MAX];
     char page[BUF_SIZE];
     char *resp = http_response_begin(e, t);
+    http_response_add_time_stamp(resp);
+    http_response_add_server(resp, s->server_name);
     http_response_add_content_type(resp, "text/html; charset=UTF-8");
     http_response_add_connection(resp, "close");
     http_response_end(resp);
@@ -135,8 +182,11 @@ int send_file(server_arg *s, char *f, char **mime)
     }
 
     resp = http_response_begin(200, "OK");
-    http_response_add_content_type(resp, get_mimetype(f));
+    http_response_add_time_stamp(resp);
+    http_response_add_server(resp, s->server_name);
+    http_response_add_modtime_stamp(resp, &sb.st_mtime);
     http_response_add_content_length(resp, sb.st_size);
+    http_response_add_content_type(resp, get_mimetype(f));
     http_response_end(resp);
 
     if (cwrite(s->net_fd, resp, strlen(resp)) != strlen(resp)) {

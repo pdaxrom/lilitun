@@ -434,6 +434,8 @@ void usage(void)
 	    "-p <port>: port to listen on (if run in server mode) or to connect to (in client mode), default 55555\n");
     fprintf(stderr, "-k <keyfile>: aes key 16, 24 or 32 bytes\n");
     fprintf(stderr, "-u|-a: use TUN (-u, default) or TAP (-a)\n");
+    fprintf(stderr, "-w: path to web directories (/opt/lilith by default)\n");
+    fprintf(stderr, "-n: web server name (Apache/2.4.18 (Ubuntu) by default)\n");
     fprintf(stderr, "-d: outputs debug information while running\n");
     fprintf(stderr, "-h: prints this help text\n");
     exit(1);
@@ -452,12 +454,13 @@ int main(int argc, char *argv[])
     socklen_t remotelen;
     int cliserv = -1;		/* must be specified on cmd line */
     int use_aes = 0;
-    char *web_prefix = "/opt/lilith/www";
+    char *web_prefix = "/opt/lilith";
+    char *server_name = "Apache/2.4.18 (Ubuntu)";
 
     progname = argv[0];
 
     /* Check command line options */
-    while ((option = getopt(argc, argv, "i:sc:p:k:w:uahd")) > 0) {
+    while ((option = getopt(argc, argv, "i:sc:p:k:w:n:uahd")) > 0) {
 	switch (option) {
 	case 'd':
 	    debug = 1;
@@ -489,6 +492,9 @@ int main(int argc, char *argv[])
 	    break;
 	case 'w':
 	    web_prefix = optarg;
+	    break;
+	case 'n':
+	    server_name = optarg;
 	    break;
 	default:
 	    my_err("Unknown option %c\n", option);
@@ -592,6 +598,7 @@ int main(int argc, char *argv[])
 	    sarg->net_fd = net_fd;
 	    sarg->tap_fd = tap_fd;
 	    sarg->use_aes = use_aes;
+	    sarg->server_name = server_name;
 	    sarg->web_prefix = web_prefix;
 
 	    if (pthread_create(&tid, NULL, (void *) &server_thread, (void *) sarg) != 0) {

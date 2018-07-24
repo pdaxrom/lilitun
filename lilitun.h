@@ -4,6 +4,7 @@ typedef struct {
     int net_fd;
     int tap_fd;
     int use_aes;
+    char *server_name;
     char *web_prefix;
 } server_arg;
 
