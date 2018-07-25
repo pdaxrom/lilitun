@@ -37,6 +37,7 @@
 #include <errno.h>
 #include <stdarg.h>
 #include <pthread.h>
+#include <signal.h>
 #include "lilitun.h"
 #include "aes.h"
 #include "http.h"
@@ -225,7 +226,7 @@ static void *tap2net_thread(void *arg)
     unsigned long int tap2net = 0;
     unsigned long int total = 0;
 
-    while (1) {
+    while (sarg->vpn_is_alive) {
 	nread = cread(sarg->tap_fd, buffer, BUFSIZE);
 	if (nread <= 0) {
 	    perror("tun cread()");
@@ -277,6 +278,8 @@ static void *tap2net_thread(void *arg)
 
     do_debug("Total written to network: %lu\n", total);
 
+    sarg->vpn_is_alive = 0;
+
     return NULL;
 }
 
@@ -293,7 +296,7 @@ static void *net2tap_thread(void *arg)
     unsigned long int net2tap = 0;
     unsigned long int total = 0;
 
-    while (1) {
+    while (sarg->vpn_is_alive) {
 	int nread_aligned;
 	/* data from the network: read it, and write it to the tun/tap interface. 
 	 * We need to read the length first, and then the packet */
@@ -357,6 +360,8 @@ static void *net2tap_thread(void *arg)
     }
 
     do_debug("Total read from network: %lu\n", total);
+
+    sarg->vpn_is_alive = 0;
 
     return NULL;
 }
@@ -603,6 +608,8 @@ static void *server_thread(void *arg)
 		    pthread_t net2tap_tid;
 		    pthread_t tap2net_tid;
 
+		    sarg->vpn_is_alive = 1;
+
 		    if (pthread_create
 			(&net2tap_tid, NULL, (void *)&net2tap_thread,
 			 (void *)sarg)
@@ -720,6 +727,8 @@ static int client_connection(server_arg * sarg)
 //          connection_loop(sarg->net_fd, sarg->tap_fd, sarg->use_aes);
 	    pthread_t net2tap_tid;
 	    pthread_t tap2net_tid;
+
+	    sarg->vpn_is_alive = 1;
 
 	    if (pthread_create
 		(&net2tap_tid, NULL, (void *)&net2tap_thread, (void *)sarg)
@@ -848,6 +857,9 @@ int main(int argc, char *argv[])
 	my_err("Must specify server address!\n");
 	usage();
     }
+
+    /* Ignore PIPE signal and return EPIPE error */
+    signal(SIGPIPE, SIG_IGN);
 
     /* initialize tun/tap interface */
     if ((tap_fd = tun_alloc(if_name, flags | IFF_NO_PI)) < 0) {

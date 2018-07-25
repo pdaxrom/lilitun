@@ -6,6 +6,7 @@ typedef struct {
     int use_aes;
     char *server_name;
     char *web_prefix;
+    int vpn_is_alive;
 } server_arg;
 
 void do_debug(char *msg, ...);
