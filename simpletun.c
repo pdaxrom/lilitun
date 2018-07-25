@@ -38,6 +38,7 @@
 #include <stdarg.h>
 #include <pthread.h>
 #include <signal.h>
+#include <syslog.h>
 #include "lilitun.h"
 #include "aes.h"
 #include "http.h"
@@ -50,7 +51,6 @@
 #define SERVER 1
 #define PORT 80
 
-int debug;
 char *progname;
 
 char server_id[6] = "lilith";
@@ -66,15 +66,19 @@ uint8 aes_key[256];
 void dump16(char *ptr)
 {
     int i;
-    char tmp[17];
-    tmp[16] = 0;
+    char tmp[128];
 
-    fprintf(stderr, "\n-----\n");
+    memset(tmp, ' ', sizeof(tmp));
+    tmp[127] = 0;
+
     for (i = 0; i < 16; i++) {
-	fprintf(stderr, "%02X ", (unsigned char)ptr[i]);
-	tmp[i] = (ptr[i] >= 32) ? ptr[i] : '.';
+//	syslog(LOG_DEBUG, "%02X ", (unsigned char)ptr[i]);
+	snprintf(&tmp[i * 3], 4, "%02X ", (unsigned char)ptr[i]);
+	tmp[49 + i] = (ptr[i] >= 32) ? ptr[i] : '.';
     }
-    fprintf(stderr, "%s\n-----\n", tmp);
+    tmp[48] = ' ';
+    tmp[65] = 0;
+    syslog(LOG_DEBUG, "DUMP16: %s\n", tmp);
 }
 
 /**************************************************************************
@@ -86,16 +90,15 @@ int init_aes(char *keyfile)
     if (inf) {
 	int size = fread(aes_key, 1, sizeof(aes_key), inf);
 	if ((size != 16) && (size != 24) && (size != 32)) {
-	    fprintf(stderr, "Key must be 16, 24 or 32 bytes! AES disabled.\n");
+	    syslog(LOG_ERR, "Key must be 16, 24 or 32 bytes! AES disabled.\n");
 	    fclose(inf);
 	    return 0;
 	}
 	fclose(inf);
-//      aes_key_size = size;
 	aes_set_key(&aes_ctx, aes_key, size * 8);
-	fprintf(stderr, "Use AES-%d.\n", size * 8);
+	syslog(LOG_INFO, "Use AES-%d.\n", size * 8);
     } else {
-	fprintf(stderr, "Can't open key file! AES disabled.\n");
+	syslog(LOG_ERR, "Can't open key file! AES disabled.\n");
 	return 0;
     }
     return 1;
@@ -187,34 +190,6 @@ int read_n(int fd, char *buf, int n)
 }
 
 /**************************************************************************
- * do_debug: prints debugging stuff (doh!)                                *
- **************************************************************************/
-void do_debug(char *msg, ...)
-{
-
-    va_list argp;
-
-    if (debug) {
-	va_start(argp, msg);
-	vfprintf(stderr, msg, argp);
-	va_end(argp);
-    }
-}
-
-/**************************************************************************
- * my_err: prints custom error messages on stderr.                        *
- **************************************************************************/
-void my_err(char *msg, ...)
-{
-
-    va_list argp;
-
-    va_start(argp, msg);
-    vfprintf(stderr, msg, argp);
-    va_end(argp);
-}
-
-/**************************************************************************
  * tap2net:                                                               *
  **************************************************************************/
 static int tap2net(server_arg * sarg)
@@ -225,17 +200,19 @@ static int tap2net(server_arg * sarg)
 
     nread = cread(sarg->tap_fd, buffer, BUFSIZE);
     if (nread <= 0) {
-	perror("tun cread()");
+	syslog(LOG_ERR, "Error read from tun (%s)\n", strerror(errno));
 	return -1;
     }
 
-    do_debug("TAP2NET: Read %d bytes from the tap interface\n", nread);
+    if (sarg->debug) {
+	syslog(LOG_DEBUG, "TAP2NET: Read %d bytes from the tap interface\n", nread);
+    }
 
     /* write length + packet */
     plength = htons(nread);
     nwrite = cwrite(sarg->net_fd, (char *)&plength, sizeof(plength));
     if (nwrite != sizeof(plength)) {
-	do_debug("tap2net_loop(): error write plength\n");
+	syslog(LOG_ERR, "tap2net_loop(): error write plength (%s)\n", strerror(errno));
 	return -1;
     }
 
@@ -246,23 +223,24 @@ static int tap2net(server_arg * sarg)
 	    memset(buffer + nread, 0, nread_aligned - nread);
 	}
 	for (i = 0; i < nread_aligned; i += 16) {
-	    aes_encrypt(&aes_ctx, (uint8 *) buffer + i,
-			(uint8 *) aes_buffer + i);
+	    aes_encrypt(&aes_ctx, (uint8 *) buffer + i, (uint8 *) aes_buffer + i);
 	}
 	nwrite = cwrite(sarg->net_fd, aes_buffer, nread_aligned);
 	if (nwrite != nread_aligned) {
-	    do_debug("tap2net_loop(): error write aes_buffer\n");
+	    syslog(LOG_ERR, "tap2net_loop(): error write aes_buffer (%s)\n", strerror(errno));
 	    return -1;
 	}
     } else {
 	nwrite = cwrite(sarg->net_fd, buffer, nread);
 	if (nwrite != nread) {
-	    do_debug("tap2net_loop(): error write buffer\n");
+	    syslog(LOG_ERR, "tap2net_loop(): error write buffer (%s)\n", strerror(errno));
 	    return -1;
 	}
     }
 
-    do_debug("TAP2NET: Written %d bytes to the network\n", nwrite);
+    if (sarg->debug) {
+	syslog(LOG_DEBUG, "TAP2NET: Written %d bytes to the network\n", nwrite);
+    }
 
     return nwrite + sizeof(plength);
 }
@@ -282,11 +260,8 @@ static int net2tap(server_arg * sarg)
 
     /* Read length */
     nread = read_n(sarg->net_fd, (char *)&plength, sizeof(plength));
-    if (nread == 0) {
-	/* ctrl-c at the other end */
-	return -1;
-    } else if (nread < 0) {
-	do_debug("connection_loop: can't read length from net_fd\n");
+    if (nread <= 0) {
+	syslog(LOG_ERR, "net2tap(): can't read length from net_fd (%s)\n", strerror(errno));
 	return -1;
     }
 
@@ -297,36 +272,38 @@ static int net2tap(server_arg * sarg)
     }
 
     /* read packet */
-    nread =
-	read_n(sarg->net_fd, buffer, sarg->use_aes ? nread_aligned : nread);
-    do_debug("NET2TAP: Read %d bytes from the network\n", nread);
-
+    nread = read_n(sarg->net_fd, buffer, sarg->use_aes ? nread_aligned : nread);
     if (nread <= 0) {
-	do_debug("connection_loop: can't read from net_fd\n");
+	syslog(LOG_ERR, "net2tap(): can't read from net_fd (%s)\n", strerror(errno));
 	return -1;
+    }
+
+    if (sarg->debug) {
+	syslog(LOG_DEBUG, "NET2TAP: Read %d bytes from the network\n", nread);
     }
 
     if (sarg->use_aes) {
 	int i;
 	for (i = 0; i < nread_aligned; i += 16) {
-	    aes_decrypt(&aes_ctx, (uint8 *) buffer + i,
-			(uint8 *) aes_buffer + i);
+	    aes_decrypt(&aes_ctx, (uint8 *) buffer + i, (uint8 *) aes_buffer + i);
 	}
 	nwrite = cwrite(sarg->tap_fd, aes_buffer, nread_aligned);
 	if (nwrite != nread_aligned) {
-	    do_debug("net2tap_loop(): error write aes_buffer\n");
+	    syslog(LOG_ERR, "net2tap(): error write aes_buffer (%s)\n", strerror(errno));
 	    return -1;
 	}
     } else {
 	/* now buffer[] contains a full packet or frame, write it into the tun/tap interface */
 	nwrite = cwrite(sarg->tap_fd, buffer, nread);
 	if (nwrite != nread) {
-	    do_debug("net2tap_loop(): error write buffer\n");
+	    syslog(LOG_ERR, "net2tap(): error write buffer (%s)\n", strerror(errno));
 	    return -1;
 	}
     }
 
-    do_debug("NET2TAP: Written %d bytes to the tap interface\n", nwrite);
+    if (sarg->debug) {
+	syslog(LOG_DEBUG, "NET2TAP: Written %d bytes to the tap interface\n", nwrite);
+    }
 
     return nwrite + sizeof(plength);
 }
@@ -350,7 +327,7 @@ static void *tap2net_thread(void *arg)
 	total += len;
     }
 
-    do_debug("Total written to network: %lu\n", total);
+    syslog(LOG_INFO, "Total written to network: %lu\n", total);
 
     sarg->vpn_is_alive = 0;
 
@@ -376,7 +353,7 @@ static void *net2tap_thread(void *arg)
 	total += len;
     }
 
-    do_debug("Total written from network: %lu\n", total);
+    syslog(LOG_INFO, "Total written from network: %lu\n", total);
 
     sarg->vpn_is_alive = 0;
 
@@ -409,7 +386,7 @@ int connection_loop(server_arg * sarg)
 	}
 
 	if (ret < 0) {
-	    perror("select()");
+	    syslog(LOG_ERR, "connection_loop(): select error (%s)\n", strerror(errno));
 	    return 1;
 	}
 
@@ -457,16 +434,18 @@ static void *server_thread(void *arg)
 
 	int nread = cread(sarg->net_fd, header, sizeof(header));
 	if (nread <= 0) {
-	    do_debug("no more data read in server_thread()\n");
+	    syslog(LOG_ERR, "[%s] No more data read in server_thread (%s)\n", sarg->client_ip, strerror(errno));
 	    break;
 	}
-	do_debug("HTTP read: [\n%s\n]\n", header);
+	if (sarg->debug) {
+	    syslog(LOG_DEBUG, "[%s] HTTP read: [\n%s\n]\n", sarg->client_ip, header);
+	}
 
 	header_get_method(header, h_method, sizeof(h_method));
 	header_get_url(header, h_url, sizeof(h_url));
 	header_get_spec(header, h_spec, sizeof(h_spec));
-	do_debug("METHOD: '%s'\nURL: '%s'\nSPEC: '%s'\n\n", h_method, h_url,
-		 h_spec);
+
+	syslog(LOG_INFO, "[%s] METHOD: '%s' URL: '%s' SPEC: '%s'\n", sarg->client_ip, h_method, h_url, h_spec);
 
 	if (!strcmp(h_method, "GET")) {
 	    char *path;
@@ -490,14 +469,14 @@ static void *server_thread(void *arg)
 
 	    if (file_path) {
 		if (stat(file_path, &sb) == -1) {
-		    do_debug("stat(file_path) error!");
+		    syslog(LOG_ERR, "[%s] %s %d: stat() (%s)\n", sarg->client_ip, __FILE__, __LINE__, strerror(errno));
 		} else {
 		    if ((sb.st_mode & S_IFMT) == S_IFDIR) {
 			char *tmp = realloc(file_path, strlen(file_path) + 11);	// file_path + "/index.html"
 			if (tmp) {
 			    file_path = tmp;
 			} else {
-			    do_debug("Not enought memory for file_path realloc()?\n");
+			    syslog(LOG_ERR, "[%s] %s %d: Not enought memory for file_path realloc()?\n", sarg->client_ip, __FILE__, __LINE__);
 			}
 			strcat(file_path, "/index.html");
 		    }
@@ -507,18 +486,14 @@ static void *server_thread(void *arg)
 		file_path = tmp_path;
 	    }
 
-	    if (file_path
-		&& !strncmp(file_path, sarg->web_prefix,
-			    strlen(sarg->web_prefix))) {
-		char *mime;
-		do_debug("File found: %s\n", file_path);
-		send_file(sarg, file_path, &mime);
-		do_debug("mime -> %s\n", mime);
+	    if (file_path && !strncmp(file_path, sarg->web_prefix, strlen(sarg->web_prefix))) {
+		syslog(LOG_INFO, "[%s] File found: %s\n", sarg->client_ip, file_path);
+		send_file(sarg, file_path);
 		if (file_path) {
 		    free(file_path);
 		}
 	    } else {
-		do_debug("File is not found\n");
+		syslog(LOG_INFO, "[%s] File not found\n", sarg->client_ip);
 		send_error(sarg, 404, "Not found");
 		if (file_path) {
 		    free(file_path);
@@ -526,7 +501,7 @@ static void *server_thread(void *arg)
 	    }
 	} else if (!strcmp(h_method, "CONNECT")) {
 	    if (!strcmp(h_url, "/") && sarg->use_aes) {
-		do_debug("CONNECT to: %s\n", h_url);
+		syslog(LOG_INFO, "[%s] CONNECT to: %s\n", sarg->client_ip, h_url);
 		char *resp = http_response_begin(200, "OK");
 		http_response_end(resp);
 
@@ -537,69 +512,73 @@ static void *server_thread(void *arg)
 		free(resp);
 
 		char tmp[16];
-		char aes_tmp[16];
+		char aes_tmp[sizeof(tmp)];
+		char session_id[sizeof(tmp) - sizeof(server_id)];
 		memcpy(tmp, server_id, sizeof(server_id));
-		if (my_getrandom
-		    (tmp + sizeof(server_id), sizeof(tmp) - sizeof(server_id),
-		     0) == -1) {
-		    perror("getrandom()");
+		if (my_getrandom(tmp + sizeof(server_id), sizeof(tmp) - sizeof(server_id), 0) == -1) {
+		    syslog(LOG_ERR, "[%s] getrandom (%s)\n", sarg->client_ip, strerror(errno));
 		    break;
 		}
 
-		dump16(tmp);
+		// Store random key as session id
+		memcpy(session_id, tmp + sizeof(server_id), sizeof(session_id));
+
+		if (sarg->debug) {
+		    dump16(tmp);
+		}
 
 		aes_encrypt(&aes_ctx, (uint8_t *) tmp, (uint8_t *) aes_tmp);
 
-		dump16(aes_tmp);
+		if (sarg->debug) {
+		    dump16(aes_tmp);
+		}
 
-		if (cwrite(sarg->net_fd, aes_tmp, sizeof(aes_tmp)) !=
-		    sizeof(aes_tmp)) {
+		if (cwrite(sarg->net_fd, aes_tmp, sizeof(aes_tmp)) != sizeof(aes_tmp)) {
 		    break;
 		}
 
 		nread = cread(sarg->net_fd, aes_tmp, sizeof(aes_tmp));
 		if (nread <= 0) {
-		    do_debug("no data read for client_id\n");
+		    syslog(LOG_INFO, "[%s] no data read for client_id\n", sarg->client_ip);
 		    break;
 		}
 
-		dump16(aes_tmp);
+		if (sarg->debug) {
+		    dump16(aes_tmp);
+		}
 
 		aes_decrypt(&aes_ctx, (uint8_t *) aes_tmp, (uint8_t *) tmp);
 
-		dump16(tmp);
+		if (sarg->debug) {
+		    dump16(tmp);
+		}
 
-		if (!strncmp(tmp, client_id, sizeof(client_id))) {
-		    do_debug("start vpn connection\n");
-//                  connection_loop(sarg->net_fd, sarg->tap_fd, sarg->use_aes);
+		if (!strncmp(tmp, client_id, sizeof(client_id)) &&
+		    !memcmp(tmp + sizeof(server_id), session_id, sizeof(session_id))) {
+		    syslog(LOG_INFO, "[%s] start vpn connection\n", sarg->client_ip);
 		    pthread_t net2tap_tid;
 		    pthread_t tap2net_tid;
 
 		    sarg->vpn_is_alive = 1;
 
-		    if (pthread_create
-			(&net2tap_tid, NULL, (void *)&net2tap_thread,
-			 (void *)sarg)
-			!= 0) {
-			fprintf(stderr, "pthread_create(net2tap_thread)\n");
-		    } else
-			if (pthread_create
-			    (&tap2net_tid, NULL, (void *)&tap2net_thread,
-			     (void *)sarg)
-			    != 0) {
-			fprintf(stderr, "pthread_create(tap2net_thread)\n");
+		    if (pthread_create(&net2tap_tid, NULL, (void *)&net2tap_thread, (void *)sarg) != 0) {
+			syslog(LOG_ERR, "[%s] pthread_create(net2tap_thread) (%s)\n", sarg->client_ip, strerror(errno));
+		    } else if (pthread_create(&tap2net_tid, NULL, (void *)&tap2net_thread, (void *)sarg) != 0) {
+			syslog(LOG_ERR, "[%s] pthread_create(tap2net_thread) (%s)\n", sarg->client_ip, strerror(errno));
 		    } else {
 			(void)pthread_join(net2tap_tid, NULL);
 			(void)pthread_join(tap2net_tid, NULL);
 		    }
 		} else {
-		    do_debug("wrong client_id, connection closed\n");
+		    syslog(LOG_INFO, "[%s] wrong client_id or session_id, connection closed\n", sarg->client_ip);
 		}
 	    } else {
+		syslog(LOG_INFO, "[%s] http error: Forbidden\n", sarg->client_ip);
 		send_error(sarg, 403, "Forbidden");
 	    }
 	    break;
 	} else {
+	    syslog(LOG_INFO, "[%s] http error: Not Implemented\n", sarg->client_ip);
 	    send_error(sarg, 501, "Not Implemented");
 	    break;
 	}
@@ -607,9 +586,10 @@ static void *server_thread(void *arg)
 
     close(sarg->net_fd);
 
-    free(sarg);
+    syslog(LOG_INFO, "[%s] Server thread finished!\n", sarg->client_ip);
 
-    do_debug("Server thread finished!\n");
+    free(sarg->client_ip);
+    free(sarg);
 
     return arg;
 }
@@ -626,23 +606,25 @@ static int client_connection(server_arg * sarg)
     static char *req = "CONNECT / HTTP/1.1\n\n";
 
     if (cwrite(sarg->net_fd, req, strlen(req)) != strlen(req)) {
-	do_debug("can't send data in client_connection()\n");
+	syslog(LOG_ERR, "Can not send data in client_connection (%s)\n", strerror(errno));
 	return 1;
     }
 
     int nread = cread(sarg->net_fd, header, sizeof(header));
     if (nread <= 0) {
-	do_debug("no data read in client_connection()\n");
+	syslog(LOG_ERR, "No data read in client_connection (%s)\n", strerror(errno));
 	return 1;
     }
 
-    do_debug("HTTP read: [\n%s\n]\n", header);
+    if (sarg->debug) {
+	syslog(LOG_DEBUG, "HTTP read: [\n%s\n]\n", header);
+    }
 
     header_get_method(header, h_method, sizeof(h_method));
     header_get_url(header, h_url, sizeof(h_url));
     header_get_spec(header, h_spec, sizeof(h_spec));
-    do_debug("METHOD: '%s'\nURL: '%s'\nSPEC: '%s'\n\n", h_method, h_url,
-	     h_spec);
+
+    syslog(LOG_INFO, "RESPONSE: '%s' STATUS: '%s' MESSAGE: '%s'\n", h_method, h_url, h_spec);
 
     if (!strcmp(h_method, "HTTP/1.1") &&
 	!strcmp(h_url, "200") && !strcmp(h_spec, "OK")) {
@@ -651,69 +633,73 @@ static int client_connection(server_arg * sarg)
 
 	char *ptr = strstr(header, "\n\n");
 	if (!ptr) {
-	    do_debug("incomplete CONNECT header\n");
+	    syslog(LOG_ERR, "Incomplete response header\n");
 	    return 1;
 	}
+
 	ptr += 2;
 	int received = nread - (ptr - header);
-	fprintf(stderr, ">>>> %d\n", received);
 
 	if (received < 16) {
 	    nread = cread(sarg->net_fd, aes_tmp, sizeof(aes_tmp) - received);
 	    if (nread <= 0) {
-		do_debug("no data read in client_connection()\n");
+		syslog(LOG_ERR, "no data read in client_connection (%s)\n", strerror(errno));
 		return 1;
 	    }
 	} else {
 	    memcpy(aes_tmp, ptr, 16);
 	}
 
-	dump16(aes_tmp);
+	if (sarg->debug) {
+	    dump16(aes_tmp);
+	}
 
 	aes_decrypt(&aes_ctx, (uint8_t *) aes_tmp, (uint8_t *) tmp);
 
-	dump16(tmp);
+	if (sarg->debug) {
+	    dump16(tmp);
+	}
 
 	if (!strncmp(tmp, server_id, sizeof(server_id))) {
-	    do_debug("server_id detected!\n");
+	    syslog(LOG_INFO, "Decrypted server_id is okay!\n");
 	    memcpy(tmp, client_id, sizeof(client_id));
 
-	    dump16(tmp);
+	    if (sarg->debug) {
+		dump16(tmp);
+	    }
 
 	    aes_encrypt(&aes_ctx, (uint8_t *) tmp, (uint8_t *) aes_tmp);
 
-	    dump16(aes_tmp);
+	    if (sarg->debug) {
+		dump16(aes_tmp);
+	    }
 
-	    if (cwrite(sarg->net_fd, aes_tmp, sizeof(aes_tmp)) !=
-		sizeof(aes_tmp)) {
-		do_debug("error send client_id\n");
+	    if (cwrite(sarg->net_fd, aes_tmp, sizeof(aes_tmp)) != sizeof(aes_tmp)) {
+		syslog(LOG_ERR, "Error send client_id (%s)\n", strerror(errno));
 		return 1;
 	    }
 
-	    do_debug("start vpn connection\n");
-//          connection_loop(sarg->net_fd, sarg->tap_fd, sarg->use_aes);
+	    syslog(LOG_INFO, "start vpn connection\n");
 	    pthread_t net2tap_tid;
 	    pthread_t tap2net_tid;
 
 	    sarg->vpn_is_alive = 1;
 
-	    if (pthread_create
-		(&net2tap_tid, NULL, (void *)&net2tap_thread, (void *)sarg)
-		!= 0) {
-		fprintf(stderr, "pthread_create(net2tap_thread)\n");
-	    } else
-		if (pthread_create
-		    (&tap2net_tid, NULL, (void *)&tap2net_thread, (void *)sarg)
-		    != 0) {
-		fprintf(stderr, "pthread_create(tap2net_thread)\n");
+	    if (pthread_create (&net2tap_tid, NULL, (void *)&net2tap_thread, (void *)sarg) != 0) {
+		syslog(LOG_ERR, "pthread_create(net2tap_thread) (%s)\n", strerror(errno));
+	    } else if (pthread_create(&tap2net_tid, NULL, (void *)&tap2net_thread, (void *)sarg) != 0) {
+		syslog(LOG_ERR, "pthread_create(tap2net_thread) (%s)\n", strerror(errno));
 	    } else {
 		(void)pthread_join(net2tap_tid, NULL);
 		(void)pthread_join(tap2net_tid, NULL);
 	    }
+	} else {
+	    syslog(LOG_INFO, "Wrong decrypted server_id\n");
 	}
 
+	syslog(LOG_INFO, "Connection finished\n");
     } else {
-	do_debug("Connection refused!\n");
+	syslog(LOG_INFO, "Connection refused\n");
     }
 
     return 0;
@@ -725,22 +711,18 @@ static int client_connection(server_arg * sarg)
 void usage(void)
 {
     fprintf(stderr, "Usage:\n");
-    fprintf(stderr,
-	    "%s -i <ifacename> [-s|-c <serverIP>] [-p <port>] [-u|-a] [-d]\n",
-	    progname);
+    fprintf(stderr, "%s -i <ifacename> [-s|-c <serverIP>] [-p <port>] [-u|-a] [-d]\n", progname);
     fprintf(stderr, "%s -h\n", progname);
     fprintf(stderr, "\n");
     fprintf(stderr, "-i <ifacename>: Name of interface to use (mandatory)\n");
-    fprintf(stderr,
-	    "-s|-c <serverIP>: run in server mode (-s), or specify server address (-c <serverIP>) (mandatory)\n");
-    fprintf(stderr,
-	    "-p <port>: port to listen on (if run in server mode) or to connect to (in client mode), default 55555\n");
+    fprintf(stderr, "-s|-c <serverIP>: run in server mode (-s), or specify server address (-c <serverIP>) (mandatory)\n");
+    fprintf(stderr, "-p <port>: port to listen on (if run in server mode) or to connect to (in client mode), default 55555\n");
     fprintf(stderr, "-k <keyfile>: aes key 16, 24 or 32 bytes\n");
     fprintf(stderr, "-u|-a: use TUN (-u, default) or TAP (-a)\n");
     fprintf(stderr, "-w: path to web directories (/opt/lilith by default)\n");
-    fprintf(stderr,
-	    "-n: web server name (Apache/2.4.18 (Ubuntu) by default)\n");
+    fprintf(stderr, "-n: web server name (Apache/2.4.18 (Ubuntu) by default)\n");
     fprintf(stderr, "-d: outputs debug information while running\n");
+    fprintf(stderr, "-e: print syslog messages to stderr\n");
     fprintf(stderr, "-h: prints this help text\n");
     exit(1);
 }
@@ -758,13 +740,17 @@ int main(int argc, char *argv[])
     socklen_t remotelen;
     int cliserv = -1;		/* must be specified on cmd line */
     int use_aes = 0;
+    int debug = 0;
+    int use_stderr = 0;
     char *web_prefix = "/opt/lilith";
     char *server_name = "Apache/2.4.18 (Ubuntu)";
 
     progname = argv[0];
 
+    openlog("lilitun", LOG_PID, LOG_DAEMON);
+
     /* Check command line options */
-    while ((option = getopt(argc, argv, "i:sc:p:k:w:n:uahd")) > 0) {
+    while ((option = getopt(argc, argv, "i:sc:p:k:w:n:uahde")) > 0) {
 	switch (option) {
 	case 'd':
 	    debug = 1;
@@ -800,8 +786,11 @@ int main(int argc, char *argv[])
 	case 'n':
 	    server_name = optarg;
 	    break;
+	case 'e':
+	    use_stderr = 1;
+	    break;
 	default:
-	    my_err("Unknown option %c\n", option);
+	    fprintf(stderr, "Unknown option %c\n", option);
 	    usage();
 	}
     }
@@ -810,18 +799,30 @@ int main(int argc, char *argv[])
     argc -= optind;
 
     if (argc > 0) {
-	my_err("Too many options!\n");
+	if (!use_stderr) {
+	    fprintf(stderr, "Too many options!\n");
+	}
+	syslog(LOG_ERR, "Too many options!\n");
 	usage();
     }
 
     if (*if_name == '\0') {
-	my_err("Must specify interface name!\n");
+	if (!use_stderr) {
+	    fprintf(stderr, "Must specify interface name!\n");
+	}
+	syslog(LOG_ERR, "Must specify interface name!\n");
 	usage();
     } else if (cliserv < 0) {
-	my_err("Must specify client or server mode!\n");
+	if (!use_stderr) {
+	    fprintf(stderr, "Must specify client or server mode!\n");
+	}
+	syslog(LOG_ERR, "Must specify client or server mode!\n");
 	usage();
     } else if ((cliserv == CLIENT) && (*remote_ip == '\0')) {
-	my_err("Must specify server address!\n");
+	if (!use_stderr) {
+	    fprintf(stderr, "Must specify server address!\n");
+	}
+	syslog(LOG_ERR, "Must specify server address!\n");
 	usage();
     }
 
@@ -830,14 +831,14 @@ int main(int argc, char *argv[])
 
     /* initialize tun/tap interface */
     if ((tap_fd = tun_alloc(if_name, flags | IFF_NO_PI)) < 0) {
-	my_err("Error connecting to tun/tap interface %s!\n", if_name);
+	syslog(LOG_ERR, "Error connecting to tun/tap interface %s (%s)!\n", if_name, strerror(errno));
 	exit(1);
     }
 
-    do_debug("Successfully connected to interface %s\n", if_name);
+    syslog(LOG_INFO, "Successfully connected to interface %s\n", if_name);
 
     if ((sock_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-	perror("socket()");
+	syslog(LOG_ERR, "Can not create socket (%s)\n", strerror(errno));
 	exit(1);
     }
 
@@ -853,12 +854,12 @@ int main(int argc, char *argv[])
 	/* connection request */
 	if (connect(sock_fd, (struct sockaddr *)&remote, sizeof(remote)) < 0) {
 	    perror("connect()");
+	    syslog(LOG_ERR, "Can not connect to server (%s)\n", strerror(errno));
 	    exit(1);
 	}
 
 	net_fd = sock_fd;
-	do_debug("CLIENT: Connected to server %s\n",
-		 inet_ntoa(remote.sin_addr));
+	syslog(LOG_INFO, "Connected to server %s\n", inet_ntoa(remote.sin_addr));
 
 	server_arg *sarg = malloc(sizeof(server_arg));
 	sarg->net_fd = net_fd;
@@ -866,25 +867,23 @@ int main(int argc, char *argv[])
 	sarg->use_aes = use_aes;
 	sarg->server_name = server_name;
 	sarg->web_prefix = web_prefix;
+	sarg->debug = debug;
 
 	if (use_aes) {
 	    client_connection(sarg);
 	} else {
-	    fprintf(stderr, "Only secure connection enabled!\n");
+	    syslog(LOG_ERR, "Only secure connection enabled!\n");
 	}
 
 	free(sarg);
-
-	//connection_loop(net_fd, tap_fd, use_aes);
 
     } else {
 	/* Server, wait for connections */
 
 	/* avoid EADDRINUSE error on bind() */
-	if (setsockopt
-	    (sock_fd, SOL_SOCKET, SO_REUSEADDR, (char *)&optval,
+	if (setsockopt(sock_fd, SOL_SOCKET, SO_REUSEADDR, (char *)&optval,
 	     sizeof(optval)) < 0) {
-	    perror("setsockopt()");
+	    syslog(LOG_ERR, "Can not set socket options (%s)\n", strerror(errno));
 	    exit(1);
 	}
 
@@ -893,12 +892,12 @@ int main(int argc, char *argv[])
 	local.sin_addr.s_addr = htonl(INADDR_ANY);
 	local.sin_port = htons(port);
 	if (bind(sock_fd, (struct sockaddr *)&local, sizeof(local)) < 0) {
-	    perror("bind()");
+	    syslog(LOG_ERR, "Bind error (%s)\n", strerror(errno));
 	    exit(1);
 	}
 
 	if (listen(sock_fd, 5) < 0) {
-	    perror("listen()");
+	    syslog(LOG_ERR, "Listen error (%s)\n", strerror(errno));
 	    exit(1);
 	}
 
@@ -908,28 +907,26 @@ int main(int argc, char *argv[])
 	    /* wait for connection request */
 	    remotelen = sizeof(remote);
 	    memset(&remote, 0, remotelen);
-	    if ((net_fd =
-		 accept(sock_fd, (struct sockaddr *)&remote,
-			&remotelen)) < 0) {
-		perror("accept()");
+	    if ((net_fd = accept(sock_fd, (struct sockaddr *)&remote, &remotelen)) < 0) {
+		syslog(LOG_ERR, "Accept error (%s)\n", strerror(errno));
 		exit(1);
 	    }
 
-	    do_debug("SERVER: Client connected from %s\n",
-		     inet_ntoa(remote.sin_addr));
+	    syslog(LOG_INFO, "Client connected from %s\n", inet_ntoa(remote.sin_addr));
 
 	    sarg = malloc(sizeof(server_arg));
 	    sarg->net_fd = net_fd;
 	    sarg->tap_fd = tap_fd;
 	    sarg->use_aes = use_aes;
+	    sarg->client_ip = strdup(inet_ntoa(remote.sin_addr));
 	    sarg->server_name = server_name;
 	    sarg->web_prefix = web_prefix;
+	    sarg->debug = debug;
 
-	    if (pthread_create
-		(&tid, NULL, (void *)&server_thread, (void *)sarg)
-		!= 0) {
+	    if (pthread_create(&tid, NULL, (void *)&server_thread, (void *)sarg) != 0) {
+		free(sarg->client_ip);
 		free(sarg);
-		fprintf(stderr, "pthread_create(server_thread)\n");
+		syslog(LOG_ERR, "Can not create server thread\n");
 	    }
 	}
     }

@@ -6,6 +6,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <time.h>
+#include <syslog.h>
+#include <errno.h>
 #include "lilitun.h"
 #include "utils.h"
 
@@ -151,9 +153,13 @@ int send_error(server_arg * s, int e, char *t)
     FILE *inf = fopen(path, "rb");
 
     if ((stat(path, &sb) == -1) || (!inf)) {
-	do_debug("send_file/stat error!");
+	syslog(LOG_WARNING, "file %s error (%s)!", path, strerror(errno));
 	fclose(inf);
-	return send_error(s, 500, "Internal Server Error");
+	if (e != 500) {
+	    return send_error(s, 500, "Internal Server Error");
+	}
+	sb.st_size = 0;
+	inf = NULL;
     }
 
     char *resp = http_response_begin(e, t);
@@ -177,14 +183,12 @@ int send_error(server_arg * s, int e, char *t)
 		return 1;
 	    }
 	}
-    } else {
-	do_debug("File %s is not found, ignore.\n", path);
     }
 
     return 0;
 }
 
-int send_file(server_arg * s, char *f, char **mime)
+int send_file(server_arg * s, char *f)
 {
     char page[BUF_SIZE];
     struct stat sb;
@@ -193,7 +197,7 @@ int send_file(server_arg * s, char *f, char **mime)
     FILE *inf = fopen(f, "rb");
 
     if ((stat(f, &sb) == -1) || (!inf)) {
-	do_debug("send_file/stat error!");
+	syslog(LOG_WARNING, "file %s error (%s)!", f, strerror(errno));
 	fclose(inf);
 	return send_error(s, 500, "Internal Server Error");
     }
@@ -226,10 +230,6 @@ int send_file(server_arg * s, char *f, char **mime)
     }
 
     fclose(inf);
-
-    if (mime) {
-	*mime = get_mimetype(f);
-    }
 
     return 0;
 }
