@@ -1,6 +1,6 @@
 TARGET=lilitun
 
-PREFIX=/opt/lilith
+PREFIX=/opt/lilitun
 
 BINDIR=$(PREFIX)/bin
 ETCDIR=$(PREFIX)/etc

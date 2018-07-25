@@ -1,6 +1,6 @@
 #!/bin/bash
 
-PREFIX=/opt/lilith
+PREFIX=/opt/lilitun
 
 SERVER_ADDR=127.0.0.1
 SERVER_PORT=80
@@ -20,7 +20,7 @@ setup_dns() {
 
 	/sbin/resolvconf -d eth0.dhclient
 
-	echo -n -e "$DNS" | /sbin/resolvconf -a "${IFACE_TUN}.lilith"
+	echo -n -e "$DNS" | /sbin/resolvconf -a "${IFACE_TUN}.lilitun"
 
 	/sbin/resolvconf -u
 
@@ -36,7 +36,7 @@ setup_dns() {
 restore_dns() {
     if [ -x /sbin/resolvconf ]; then
 
-	/sbin/resolvconf -d "${IFACE_TUN}.lilith"
+	/sbin/resolvconf -d "${IFACE_TUN}.lilitun"
 
 	cat /var/run/openvpn/eth0.dhclient.${IFACE_TUN}.backup | /sbin/resolvconf -a eth0.dhclient
 

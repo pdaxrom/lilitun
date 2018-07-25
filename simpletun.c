@@ -719,7 +719,7 @@ void usage(void)
     fprintf(stderr, "-p <port>: port to listen on (if run in server mode) or to connect to (in client mode), default 55555\n");
     fprintf(stderr, "-k <keyfile>: aes key 16, 24 or 32 bytes\n");
     fprintf(stderr, "-u|-a: use TUN (-u, default) or TAP (-a)\n");
-    fprintf(stderr, "-w: path to web directories (/opt/lilith by default)\n");
+    fprintf(stderr, "-w: path to web directories (/opt/lilitun by default)\n");
     fprintf(stderr, "-n: web server name (Apache/2.4.18 (Ubuntu) by default)\n");
     fprintf(stderr, "-d: outputs debug information while running\n");
     fprintf(stderr, "-e: print syslog messages to stderr\n");
@@ -742,7 +742,7 @@ int main(int argc, char *argv[])
     int use_aes = 0;
     int debug = 0;
     int use_stderr = 0;
-    char *web_prefix = "/opt/lilith";
+    char *web_prefix = "/opt/lilitun";
     char *server_name = "Apache/2.4.18 (Ubuntu)";
 
     progname = argv[0];

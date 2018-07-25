@@ -1,6 +1,6 @@
 #!/bin/bash
 
-PREFIX=/opt/lilith
+PREFIX=/opt/lilitun
 
 SERVER_PORT=80
 KEY_FILE=${PREFIX}/etc/key32.dat
