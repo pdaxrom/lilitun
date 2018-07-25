@@ -87,6 +87,7 @@ int init_aes(char *keyfile)
 	int size = fread(aes_key, 1, sizeof(aes_key), inf);
 	if ((size != 16) && (size != 24) && (size != 32)) {
 	    fprintf(stderr, "Key must be 16, 24 or 32 bytes! AES disabled.\n");
+	    fclose(inf);
 	    return 0;
 	}
 	fclose(inf);
@@ -492,7 +493,12 @@ static void *server_thread(void *arg)
 		    do_debug("stat(file_path) error!");
 		} else {
 		    if ((sb.st_mode & S_IFMT) == S_IFDIR) {
-			file_path = realloc(file_path, strlen(file_path) + 11);	// file_path + "/index.html"
+			char *tmp = realloc(file_path, strlen(file_path) + 11);	// file_path + "/index.html"
+			if (tmp) {
+			    file_path = tmp;
+			} else {
+			    do_debug("Not enought memory for file_path realloc()?\n");
+			}
 			strcat(file_path, "/index.html");
 		    }
 		}

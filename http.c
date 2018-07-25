@@ -152,6 +152,7 @@ int send_error(server_arg * s, int e, char *t)
 
     if ((stat(path, &sb) == -1) || (!inf)) {
 	do_debug("send_file/stat error!");
+	fclose(inf);
 	return send_error(s, 500, "Internal Server Error");
     }
 
@@ -163,6 +164,7 @@ int send_error(server_arg * s, int e, char *t)
     http_response_end(resp);
     if (cwrite(s->net_fd, resp, strlen(resp)) != strlen(resp)) {
 	free(resp);
+	fclose(inf);
 	return 1;
     }
     free(resp);
@@ -192,6 +194,7 @@ int send_file(server_arg * s, char *f, char **mime)
 
     if ((stat(f, &sb) == -1) || (!inf)) {
 	do_debug("send_file/stat error!");
+	fclose(inf);
 	return send_error(s, 500, "Internal Server Error");
     }
 
@@ -205,6 +208,7 @@ int send_file(server_arg * s, char *f, char **mime)
 
     if (cwrite(s->net_fd, resp, strlen(resp)) != strlen(resp)) {
 	free(resp);
+	fclose(inf);
 	return 1;
     }
     free(resp);
