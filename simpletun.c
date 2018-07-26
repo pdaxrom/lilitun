@@ -258,25 +258,46 @@ static int tap2net(server_arg * sarg)
 static int net2tap(server_arg * sarg)
 {
     uint16_t nread, nwrite;
-    char buffer[((BUFSIZE - 1) / 16 + 1) * 16];
     char aes_buffer[((BUFSIZE - 1) / 16 + 1) * 16];
-    uint16_t *plength = (uint16_t *) aes_buffer;
+    uint16_t *plength;
     int nread_aligned;
+
     /* data from the network: read it, and write it to the tun/tap interface. 
      * We need to read the length first, and then the packet */
 
-    /* Read length */
-    nread = read_n(sarg->net_fd, buffer, 16);
-    if (nread <= 0) {
-	syslog(LOG_ERR, "net2tap(): can't read length from net_fd (%s)\n", strerror(errno));
-	return -1;
+    if (!sarg->rbuffer) {
+	sarg->rbuffer_size = ((BUFSIZE - 1) / 16 + 1) * 16;
+	sarg->rbuffer = malloc(sarg->rbuffer_size);
+	sarg->rbuffered = 0;
+    }
+
+    if (sarg->use_aes) {
+	plength = (uint16_t *) aes_buffer;
+    } else {
+	plength = (uint16_t *) sarg->rbuffer;
     }
 
     if (sarg->debug) {
-	syslog(LOG_DEBUG, "NET2TAP: Read %d bytes from network\n", nread);
+	syslog(LOG_DEBUG, "net2tap(): buffered %d bytes\n", sarg->rbuffered);
     }
 
-    aes_decrypt(&aes_ctx, (uint8_t *)buffer, (uint8_t *)aes_buffer);
+    while (sarg->rbuffered < 16) {
+	nread = cread(sarg->net_fd, sarg->rbuffer + sarg->rbuffered, sarg->rbuffer_size - sarg->rbuffered);
+	if (nread <= 0) {
+	    syslog(LOG_ERR, "net2tap(): can't read from net_fd (%s)\n", strerror(errno));
+	    return -1;
+	}
+
+	if (sarg->debug) {
+	    syslog(LOG_INFO, "net2tap(): read in buffer+%d %d bytes\n", sarg->rbuffered, nread);
+	}
+
+	sarg->rbuffered += nread;
+    }
+
+    if (sarg->use_aes) {
+	aes_decrypt(&aes_ctx, (uint8_t *)sarg->rbuffer, (uint8_t *)aes_buffer);
+    }
 
     nread = ntohs(*plength);
 
@@ -286,39 +307,47 @@ static int net2tap(server_arg * sarg)
 
     if (sarg->use_aes) {
 	nread_aligned = ((nread - 1) / 16 + 1) * 16;
+
+	if (sarg->debug) {
+	    syslog(LOG_DEBUG, "NET2TAP: Packet size aligned = %d\n", nread_aligned);
+	}
+    }
+
+    while (sarg->rbuffered < (sarg->use_aes ? nread_aligned : nread)) {
+	int len = cread(sarg->net_fd, sarg->rbuffer + sarg->rbuffered, sarg->rbuffer_size - sarg->rbuffered);
+
+	if (len <= 0) {
+	    syslog(LOG_ERR, "net2tap(): can't read from net_fd (%s)\n", strerror(errno));
+	    return -1;
+	}
+
+	sarg->rbuffered += len;
     }
 
     if (sarg->debug) {
-	syslog(LOG_DEBUG, "NET2TAP: Packet size aligned = %d\n", nread);
+	syslog(LOG_DEBUG, "NET2TAP: Buffered %d bytes from the network\n", sarg->rbuffered);
     }
-
-    /* read packet */
-    nread = read_n(sarg->net_fd, buffer + 16, sarg->use_aes ? (nread_aligned - 16) : nread);
-    if (nread <= 0) {
-	syslog(LOG_ERR, "net2tap(): can't read from net_fd (%s)\n", strerror(errno));
-	return -1;
-    }
-
-    if (sarg->debug) {
-	syslog(LOG_DEBUG, "NET2TAP: Read last %d bytes from the network\n", nread);
-    }
-
-    nread = htons(*plength) - sizeof(*plength);
 
     if (sarg->use_aes) {
 	int i;
 	for (i = 16; i < nread_aligned; i += 16) {
-	    aes_decrypt(&aes_ctx, (uint8 *) buffer + i, (uint8 *) aes_buffer + i);
+	    aes_decrypt(&aes_ctx, (uint8 *) sarg->rbuffer + i, (uint8 *) aes_buffer + i);
 	}
-	nwrite = cwrite(sarg->tap_fd, aes_buffer + sizeof(*plength), nread);
+	nwrite = cwrite(sarg->tap_fd, aes_buffer + sizeof(*plength), nread - sizeof(*plength));
     } else {
 	/* now buffer[] contains a full packet or frame, write it into the tun/tap interface */
-	nwrite = cwrite(sarg->tap_fd, buffer + sizeof(*plength), nread);
+	nwrite = cwrite(sarg->tap_fd, sarg->rbuffer + sizeof(*plength), nread - sizeof(*plength));
     }
 
-    if (nwrite != nread) {
+    if (nwrite != nread - sizeof(*plength)) {
 	syslog(LOG_ERR, "net2tap(): error write buffer (%s)\n", strerror(errno));
 	return -1;
+    }
+
+    sarg->rbuffered -= (sarg->use_aes ? nread_aligned : nread);
+
+    if (sarg->rbuffered > 0) {
+	memcpy(sarg->rbuffer, sarg->rbuffer + (sarg->use_aes ? nread_aligned : nread), sarg->rbuffered);
     }
 
     if (sarg->debug) {
@@ -363,6 +392,8 @@ static void *net2tap_thread(void *arg)
 
     unsigned long int total = 0;
 
+    sarg->rbuffer = NULL;
+
     while (sarg->vpn_is_alive) {
 	int len = net2tap(sarg);
 
@@ -374,6 +405,10 @@ static void *net2tap_thread(void *arg)
     }
 
     syslog(LOG_INFO, "Total written from network: %lu\n", total);
+
+    if (sarg->rbuffer) {
+	free(sarg->rbuffer);
+    }
 
     sarg->vpn_is_alive = 0;
 
@@ -588,6 +623,7 @@ static void *server_thread(void *arg)
 		    } else {
 			(void)pthread_join(net2tap_tid, NULL);
 			(void)pthread_join(tap2net_tid, NULL);
+			syslog(LOG_INFO, "[%s] vpn connection finished\n", sarg->client_ip);
 		    }
 		} else {
 		    syslog(LOG_INFO, "[%s] wrong client_id or session_id, connection closed\n", sarg->client_ip);
