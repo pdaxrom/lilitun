@@ -46,7 +46,7 @@
 #include "getrandom.h"
 
 /* buffer for reading from tun/tap interface, must be >= 1500 */
-#define BUFSIZE 2000
+#define BUFSIZE 2048
 #define CLIENT 0
 #define SERVER 1
 #define PORT 80
@@ -194,11 +194,12 @@ int read_n(int fd, char *buf, int n)
  **************************************************************************/
 static int tap2net(server_arg * sarg)
 {
-    uint16_t nread, nwrite, plength;
+    uint16_t nread, nwrite;
     char buffer[((BUFSIZE - 1) / 16 + 1) * 16];
     char aes_buffer[((BUFSIZE - 1) / 16 + 1) * 16];
+    uint16_t *plength = (uint16_t *) buffer;
 
-    nread = cread(sarg->tap_fd, buffer, BUFSIZE);
+    nread = cread(sarg->tap_fd, buffer + sizeof(*plength), BUFSIZE);
     if (nread <= 0) {
 	syslog(LOG_ERR, "Error read from tun (%s)\n", strerror(errno));
 	return -1;
@@ -208,13 +209,14 @@ static int tap2net(server_arg * sarg)
 	syslog(LOG_DEBUG, "TAP2NET: Read %d bytes from the tap interface\n", nread);
     }
 
-    /* write length + packet */
-    plength = htons(nread);
-    nwrite = cwrite(sarg->net_fd, (char *)&plength, sizeof(plength));
-    if (nwrite != sizeof(plength)) {
-	syslog(LOG_ERR, "tap2net_loop(): error write plength (%s)\n", strerror(errno));
-	return -1;
+    nread += sizeof(*plength);
+
+    if (sarg->debug) {
+	syslog(LOG_DEBUG, "TAP2NET: Packet size = %d\n", nread);
     }
+
+    /* write length + packet */
+    *plength = htons(nread);
 
     if (sarg->use_aes) {
 	int i;
@@ -225,9 +227,14 @@ static int tap2net(server_arg * sarg)
 	for (i = 0; i < nread_aligned; i += 16) {
 	    aes_encrypt(&aes_ctx, (uint8 *) buffer + i, (uint8 *) aes_buffer + i);
 	}
+
+	if (sarg->debug) {
+	    syslog(LOG_DEBUG, "TAP2NET: Packet size aligned = %d\n", nread_aligned);
+	}
+
 	nwrite = cwrite(sarg->net_fd, aes_buffer, nread_aligned);
 	if (nwrite != nread_aligned) {
-	    syslog(LOG_ERR, "tap2net_loop(): error write aes_buffer (%s)\n", strerror(errno));
+	    syslog(LOG_ERR, "tap2net_loop(): error write buffer (%s)\n", strerror(errno));
 	    return -1;
 	}
     } else {
@@ -242,7 +249,7 @@ static int tap2net(server_arg * sarg)
 	syslog(LOG_DEBUG, "TAP2NET: Written %d bytes to the network\n", nwrite);
     }
 
-    return nwrite + sizeof(plength);
+    return nwrite;
 }
 
 /**************************************************************************
@@ -250,62 +257,75 @@ static int tap2net(server_arg * sarg)
  **************************************************************************/
 static int net2tap(server_arg * sarg)
 {
-    uint16_t nread, nwrite, plength;
+    uint16_t nread, nwrite;
     char buffer[((BUFSIZE - 1) / 16 + 1) * 16];
     char aes_buffer[((BUFSIZE - 1) / 16 + 1) * 16];
-
+    uint16_t *plength = (uint16_t *) aes_buffer;
     int nread_aligned;
     /* data from the network: read it, and write it to the tun/tap interface. 
      * We need to read the length first, and then the packet */
 
     /* Read length */
-    nread = read_n(sarg->net_fd, (char *)&plength, sizeof(plength));
+    nread = read_n(sarg->net_fd, buffer, 16);
     if (nread <= 0) {
 	syslog(LOG_ERR, "net2tap(): can't read length from net_fd (%s)\n", strerror(errno));
 	return -1;
     }
 
-    nread = ntohs(plength);
+    if (sarg->debug) {
+	syslog(LOG_DEBUG, "NET2TAP: Read %d bytes from network\n", nread);
+    }
+
+    aes_decrypt(&aes_ctx, (uint8_t *)buffer, (uint8_t *)aes_buffer);
+
+    nread = ntohs(*plength);
+
+    if (sarg->debug) {
+	syslog(LOG_DEBUG, "NET2TAP: Packet size = %d\n", nread);
+    }
 
     if (sarg->use_aes) {
 	nread_aligned = ((nread - 1) / 16 + 1) * 16;
     }
 
+    if (sarg->debug) {
+	syslog(LOG_DEBUG, "NET2TAP: Packet size aligned = %d\n", nread);
+    }
+
     /* read packet */
-    nread = read_n(sarg->net_fd, buffer, sarg->use_aes ? nread_aligned : nread);
+    nread = read_n(sarg->net_fd, buffer + 16, sarg->use_aes ? (nread_aligned - 16) : nread);
     if (nread <= 0) {
 	syslog(LOG_ERR, "net2tap(): can't read from net_fd (%s)\n", strerror(errno));
 	return -1;
     }
 
     if (sarg->debug) {
-	syslog(LOG_DEBUG, "NET2TAP: Read %d bytes from the network\n", nread);
+	syslog(LOG_DEBUG, "NET2TAP: Read last %d bytes from the network\n", nread);
     }
+
+    nread = htons(*plength) - sizeof(*plength);
 
     if (sarg->use_aes) {
 	int i;
-	for (i = 0; i < nread_aligned; i += 16) {
+	for (i = 16; i < nread_aligned; i += 16) {
 	    aes_decrypt(&aes_ctx, (uint8 *) buffer + i, (uint8 *) aes_buffer + i);
 	}
-	nwrite = cwrite(sarg->tap_fd, aes_buffer, nread_aligned);
-	if (nwrite != nread_aligned) {
-	    syslog(LOG_ERR, "net2tap(): error write aes_buffer (%s)\n", strerror(errno));
-	    return -1;
-	}
+	nwrite = cwrite(sarg->tap_fd, aes_buffer + sizeof(*plength), nread);
     } else {
 	/* now buffer[] contains a full packet or frame, write it into the tun/tap interface */
-	nwrite = cwrite(sarg->tap_fd, buffer, nread);
-	if (nwrite != nread) {
-	    syslog(LOG_ERR, "net2tap(): error write buffer (%s)\n", strerror(errno));
-	    return -1;
-	}
+	nwrite = cwrite(sarg->tap_fd, buffer + sizeof(*plength), nread);
+    }
+
+    if (nwrite != nread) {
+	syslog(LOG_ERR, "net2tap(): error write buffer (%s)\n", strerror(errno));
+	return -1;
     }
 
     if (sarg->debug) {
 	syslog(LOG_DEBUG, "NET2TAP: Written %d bytes to the tap interface\n", nwrite);
     }
 
-    return nwrite + sizeof(plength);
+    return nwrite;
 }
 
 /**************************************************************************
