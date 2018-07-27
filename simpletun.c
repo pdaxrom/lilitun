@@ -72,7 +72,7 @@ void dump16(char *ptr)
     tmp[127] = 0;
 
     for (i = 0; i < 16; i++) {
-//	syslog(LOG_DEBUG, "%02X ", (unsigned char)ptr[i]);
+//      syslog(LOG_DEBUG, "%02X ", (unsigned char)ptr[i]);
 	snprintf(&tmp[i * 3], 4, "%02X ", (unsigned char)ptr[i]);
 	tmp[49 + i] = (ptr[i] >= 32) ? ptr[i] : '.';
     }
@@ -116,7 +116,7 @@ int tun_alloc(char *dev, int flags)
     char *clonedev = "/dev/net/tun";
 
     if ((fd = open(clonedev, O_RDWR)) < 0) {
-	perror("Opening /dev/net/tun");
+	syslog(LOG_ERR, "Opening /dev/net/tun (%s)\n", strerror(errno));
 	return fd;
     }
 
@@ -129,7 +129,7 @@ int tun_alloc(char *dev, int flags)
     }
 
     if ((err = ioctl(fd, TUNSETIFF, (void *)&ifr)) < 0) {
-	perror("ioctl(TUNSETIFF)");
+	syslog(LOG_ERR, "ioctl(TUNSETIFF) (%s)\n", strerror(errno));
 	close(fd);
 	return err;
     }
@@ -149,7 +149,7 @@ int cread(int fd, char *buf, int n)
     int nread;
 
     if ((nread = read(fd, buf, n)) < 0) {
-	perror("Reading data");
+	syslog(LOG_ERR, "Reading data (%s)\n", strerror(errno));
     }
     return nread;
 }
@@ -164,7 +164,7 @@ int cwrite(int fd, char *buf, int n)
     int nwrite;
 
     if ((nwrite = write(fd, buf, n)) < 0) {
-	perror("Writing data");
+	syslog(LOG_ERR, "Writing data (%s)\n", strerror(errno));
     }
     return nwrite;
 }
@@ -194,7 +194,7 @@ int read_n(int fd, char *buf, int n)
  **************************************************************************/
 static int tap2net(server_arg * sarg)
 {
-    uint16_t nread, nwrite;
+    int16_t nread, nwrite;
     char buffer[((BUFSIZE - 1) / 16 + 1) * 16];
     char aes_buffer[((BUFSIZE - 1) / 16 + 1) * 16];
     uint16_t *plength = (uint16_t *) buffer;
@@ -257,7 +257,7 @@ static int tap2net(server_arg * sarg)
  **************************************************************************/
 static int net2tap(server_arg * sarg)
 {
-    uint16_t nread, nwrite;
+    int16_t nread, nwrite;
     char aes_buffer[((BUFSIZE - 1) / 16 + 1) * 16];
     uint16_t *plength;
     int nread_aligned;
@@ -281,7 +281,7 @@ static int net2tap(server_arg * sarg)
 	syslog(LOG_DEBUG, "net2tap(): buffered %d bytes\n", sarg->rbuffered);
     }
 
-    while (sarg->rbuffered < 16) {
+    while (sarg->rbuffered < (sarg->use_aes ? 16 : sizeof(*plength))) {
 	nread = cread(sarg->net_fd, sarg->rbuffer + sarg->rbuffered, sarg->rbuffer_size - sarg->rbuffered);
 	if (nread <= 0) {
 	    syslog(LOG_ERR, "net2tap(): can't read from net_fd (%s)\n", strerror(errno));
@@ -296,52 +296,62 @@ static int net2tap(server_arg * sarg)
     }
 
     if (sarg->use_aes) {
-	aes_decrypt(&aes_ctx, (uint8_t *)sarg->rbuffer, (uint8_t *)aes_buffer);
+	aes_decrypt(&aes_ctx, (uint8_t *) sarg->rbuffer, (uint8_t *) aes_buffer);
     }
 
-    nread = ntohs(*plength);
-
-    if (sarg->debug) {
-	syslog(LOG_DEBUG, "NET2TAP: Packet size = %d\n", nread);
-    }
-
-    if (sarg->use_aes) {
-	nread_aligned = ((nread - 1) / 16 + 1) * 16;
+    if (ntohs(*plength) == 0xffff) {
+	syslog(LOG_INFO, "Ping packet received\n");
+	if (sarg->use_aes) {
+	    nread_aligned = 16;
+	} else {
+	    nread = sizeof(*plength);
+	}
+    } else {
+	nread = ntohs(*plength);
 
 	if (sarg->debug) {
-	    syslog(LOG_DEBUG, "NET2TAP: Packet size aligned = %d\n", nread_aligned);
+	    syslog(LOG_DEBUG, "NET2TAP: Packet size = %d\n", nread);
 	}
-    }
 
-    while (sarg->rbuffered < (sarg->use_aes ? nread_aligned : nread)) {
-	int len = cread(sarg->net_fd, sarg->rbuffer + sarg->rbuffered, sarg->rbuffer_size - sarg->rbuffered);
+	if (sarg->use_aes) {
+	    nread_aligned = ((nread - 1) / 16 + 1) * 16;
 
-	if (len <= 0) {
-	    syslog(LOG_ERR, "net2tap(): can't read from net_fd (%s)\n", strerror(errno));
+	    if (sarg->debug) {
+		syslog(LOG_DEBUG, "NET2TAP: Packet size aligned = %d\n", nread_aligned);
+	    }
+	}
+
+	while (sarg->rbuffered < (sarg->use_aes ? nread_aligned : nread)) {
+	    int len = cread(sarg->net_fd, sarg->rbuffer + sarg->rbuffered, sarg->rbuffer_size - sarg->rbuffered);
+
+	    if (len <= 0) {
+		syslog(LOG_ERR, "net2tap(): can't read from net_fd (%s)\n", strerror(errno));
+		return -1;
+	    }
+
+	    sarg->rbuffered += len;
+	}
+
+	if (sarg->debug) {
+	    syslog(LOG_DEBUG, "NET2TAP: Buffered %d bytes from the network\n", sarg->rbuffered);
+	}
+
+	if (sarg->use_aes) {
+	    int i;
+	    for (i = 16; i < nread_aligned; i += 16) {
+		aes_decrypt(&aes_ctx, (uint8 *) sarg->rbuffer + i, (uint8 *) aes_buffer + i);
+	    }
+	    nwrite = cwrite(sarg->tap_fd, aes_buffer + sizeof(*plength), nread - sizeof(*plength));
+	} else {
+	    /* now buffer[] contains a full packet or frame, write it into the tun/tap interface */
+	    nwrite = cwrite(sarg->tap_fd, sarg->rbuffer + sizeof(*plength), nread - sizeof(*plength));
+	}
+
+	if (nwrite != nread - sizeof(*plength)) {
+	    syslog(LOG_ERR, "net2tap(): error write buffer (%s)\n", strerror(errno));
 	    return -1;
 	}
 
-	sarg->rbuffered += len;
-    }
-
-    if (sarg->debug) {
-	syslog(LOG_DEBUG, "NET2TAP: Buffered %d bytes from the network\n", sarg->rbuffered);
-    }
-
-    if (sarg->use_aes) {
-	int i;
-	for (i = 16; i < nread_aligned; i += 16) {
-	    aes_decrypt(&aes_ctx, (uint8 *) sarg->rbuffer + i, (uint8 *) aes_buffer + i);
-	}
-	nwrite = cwrite(sarg->tap_fd, aes_buffer + sizeof(*plength), nread - sizeof(*plength));
-    } else {
-	/* now buffer[] contains a full packet or frame, write it into the tun/tap interface */
-	nwrite = cwrite(sarg->tap_fd, sarg->rbuffer + sizeof(*plength), nread - sizeof(*plength));
-    }
-
-    if (nwrite != nread - sizeof(*plength)) {
-	syslog(LOG_ERR, "net2tap(): error write buffer (%s)\n", strerror(errno));
-	return -1;
     }
 
     sarg->rbuffered -= (sarg->use_aes ? nread_aligned : nread);
@@ -352,6 +362,36 @@ static int net2tap(server_arg * sarg)
 
     if (sarg->debug) {
 	syslog(LOG_DEBUG, "NET2TAP: Written %d bytes to the tap interface\n", nwrite);
+    }
+
+    return nwrite;
+}
+
+/**************************************************************************
+ * send_ping(): send ping to another side                                 *
+ **************************************************************************/
+static int send_ping(server_arg * sarg)
+{
+    int nwrite, nlen;
+    char buffer[16], aes_buffer[16];
+    uint16_t *plength = (uint16_t *) buffer;
+
+    memset(buffer, 0, sizeof(buffer));
+
+    *plength = 0xffff;
+
+    if (sarg->use_aes) {
+	nlen = sizeof(aes_buffer);
+	aes_encrypt(&aes_ctx, (uint8_t *) buffer, (uint8_t *) aes_buffer);
+	nwrite = cwrite(sarg->net_fd, aes_buffer, nlen);
+    } else {
+	nlen = sizeof(*plength);
+	nwrite = cwrite(sarg->net_fd, buffer, nlen);
+    }
+
+    if (nwrite != nlen) {
+	syslog(LOG_ERR, "Error sending ping (%s)\n", strerror(errno));
+	return -1;
     }
 
     return nwrite;
@@ -422,6 +462,15 @@ int connection_loop(server_arg * sarg)
 {
     int maxfd;
     unsigned long int tap2net_total = 0, net2tap_total = 0;
+    int ping_sent = 0;
+    struct timespec wd_old;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &wd_old) == -1) {
+	syslog(LOG_ERR, "Clock gettime\n");
+	return 0;
+    }
+
+    sarg->rbuffer = NULL;
 
     /* use select() to handle two descriptors at once */
     maxfd = (sarg->tap_fd > sarg->net_fd) ? sarg->tap_fd : sarg->net_fd;
@@ -429,12 +478,17 @@ int connection_loop(server_arg * sarg)
     while (sarg->vpn_is_alive) {
 	int ret;
 	fd_set rd_set;
+	struct timeval tv;
+	struct timespec wd_current;
+
+	tv.tv_sec = sarg->ping_time;
+	tv.tv_usec = 0;
 
 	FD_ZERO(&rd_set);
 	FD_SET(sarg->tap_fd, &rd_set);
 	FD_SET(sarg->net_fd, &rd_set);
 
-	ret = select(maxfd + 1, &rd_set, NULL, NULL, NULL);
+	ret = select(maxfd + 1, &rd_set, NULL, NULL, &tv);
 
 	if (ret < 0 && errno == EINTR) {
 	    continue;
@@ -443,6 +497,32 @@ int connection_loop(server_arg * sarg)
 	if (ret < 0) {
 	    syslog(LOG_ERR, "connection_loop(): select error (%s)\n", strerror(errno));
 	    return 1;
+	}
+
+	if (clock_gettime(CLOCK_MONOTONIC, &wd_current) == -1) {
+	    syslog(LOG_ERR, "Clock gettime\n");
+	    break;
+	}
+
+	if ((wd_current.tv_sec - wd_old.tv_sec > sarg->ping_time) && !FD_ISSET(sarg->net_fd, &rd_set)) {
+	    wd_old = wd_current;
+	    // timeout
+	    if (ping_sent > 3) {
+		syslog(LOG_INFO, "Ping sent 3 times, no reply, connection timeout.\n");
+		break;
+	    }
+	    syslog(LOG_INFO, "Send ping\n");
+	    if (send_ping(sarg) < 0) {
+		break;
+	    }
+	    ping_sent++;
+	}
+
+	if (!ret) {
+	    if (sarg->debug) {
+		syslog(LOG_DEBUG, "Select timeout, continue\n");
+	    }
+	    continue;
 	}
 
 	if (FD_ISSET(sarg->tap_fd, &rd_set)) {
@@ -464,7 +544,13 @@ int connection_loop(server_arg * sarg)
 	    }
 
 	    net2tap_total += len;
+
+	    ping_sent = 0;
 	}
+    }
+
+    if (sarg->rbuffer) {
+	free(sarg->rbuffer);
     }
 
     sarg->vpn_is_alive = 0;
@@ -531,7 +617,8 @@ static void *server_thread(void *arg)
 			if (tmp) {
 			    file_path = tmp;
 			} else {
-			    syslog(LOG_ERR, "[%s] %s %d: Not enought memory for file_path realloc()?\n", sarg->client_ip, __FILE__, __LINE__);
+			    syslog(LOG_ERR, "[%s] %s %d: Not enought memory for file_path realloc()?\n", sarg->client_ip,
+				   __FILE__, __LINE__);
 			}
 			strcat(file_path, "/index.html");
 		    }
@@ -574,7 +661,6 @@ static void *server_thread(void *arg)
 		    syslog(LOG_ERR, "[%s] getrandom (%s)\n", sarg->client_ip, strerror(errno));
 		    break;
 		}
-
 		// Store random key as session id
 		memcpy(session_id, tmp + sizeof(server_id), sizeof(session_id));
 
@@ -610,11 +696,13 @@ static void *server_thread(void *arg)
 
 		if (!strncmp(tmp, client_id, sizeof(client_id)) &&
 		    !memcmp(tmp + sizeof(server_id), session_id, sizeof(session_id))) {
-		    syslog(LOG_INFO, "[%s] start vpn connection\n", sarg->client_ip);
-		    pthread_t net2tap_tid;
-		    pthread_t tap2net_tid;
+		    syslog(LOG_INFO, "[%s] Start VPN connection\n", sarg->client_ip);
 
 		    sarg->vpn_is_alive = 1;
+
+#if 1
+		    pthread_t net2tap_tid;
+		    pthread_t tap2net_tid;
 
 		    if (pthread_create(&net2tap_tid, NULL, (void *)&net2tap_thread, (void *)sarg) != 0) {
 			syslog(LOG_ERR, "[%s] pthread_create(net2tap_thread) (%s)\n", sarg->client_ip, strerror(errno));
@@ -623,8 +711,11 @@ static void *server_thread(void *arg)
 		    } else {
 			(void)pthread_join(net2tap_tid, NULL);
 			(void)pthread_join(tap2net_tid, NULL);
-			syslog(LOG_INFO, "[%s] vpn connection finished\n", sarg->client_ip);
 		    }
+#else
+		    connection_loop(sarg);
+#endif
+		    syslog(LOG_INFO, "[%s] VPN connection finished\n", sarg->client_ip);
 		} else {
 		    syslog(LOG_INFO, "[%s] wrong client_id or session_id, connection closed\n", sarg->client_ip);
 		}
@@ -682,8 +773,7 @@ static int client_connection(server_arg * sarg)
 
     syslog(LOG_INFO, "RESPONSE: '%s' STATUS: '%s' MESSAGE: '%s'\n", h_method, h_url, h_spec);
 
-    if (!strcmp(h_method, "HTTP/1.1") &&
-	!strcmp(h_url, "200") && !strcmp(h_spec, "OK")) {
+    if (!strcmp(h_method, "HTTP/1.1") && !strcmp(h_url, "200") && !strcmp(h_spec, "OK")) {
 	char tmp[16];
 	char aes_tmp[16];
 
@@ -735,13 +825,14 @@ static int client_connection(server_arg * sarg)
 		return 1;
 	    }
 
-	    syslog(LOG_INFO, "start vpn connection\n");
+	    syslog(LOG_INFO, "Start VPN connection\n");
+	    sarg->vpn_is_alive = 1;
+
+#if 1
 	    pthread_t net2tap_tid;
 	    pthread_t tap2net_tid;
 
-	    sarg->vpn_is_alive = 1;
-
-	    if (pthread_create (&net2tap_tid, NULL, (void *)&net2tap_thread, (void *)sarg) != 0) {
+	    if (pthread_create(&net2tap_tid, NULL, (void *)&net2tap_thread, (void *)sarg) != 0) {
 		syslog(LOG_ERR, "pthread_create(net2tap_thread) (%s)\n", strerror(errno));
 	    } else if (pthread_create(&tap2net_tid, NULL, (void *)&tap2net_thread, (void *)sarg) != 0) {
 		syslog(LOG_ERR, "pthread_create(tap2net_thread) (%s)\n", strerror(errno));
@@ -749,11 +840,14 @@ static int client_connection(server_arg * sarg)
 		(void)pthread_join(net2tap_tid, NULL);
 		(void)pthread_join(tap2net_tid, NULL);
 	    }
+#else
+	    connection_loop(sarg);
+#endif
 	} else {
 	    syslog(LOG_INFO, "Wrong decrypted server_id\n");
 	}
 
-	syslog(LOG_INFO, "Connection finished\n");
+	syslog(LOG_INFO, "VPN connection finished\n");
     } else {
 	syslog(LOG_INFO, "Connection refused\n");
     }
@@ -909,7 +1003,6 @@ int main(int argc, char *argv[])
 
 	/* connection request */
 	if (connect(sock_fd, (struct sockaddr *)&remote, sizeof(remote)) < 0) {
-	    perror("connect()");
 	    syslog(LOG_ERR, "Can not connect to server (%s)\n", strerror(errno));
 	    exit(1);
 	}
@@ -924,6 +1017,8 @@ int main(int argc, char *argv[])
 	sarg->server_name = server_name;
 	sarg->web_prefix = web_prefix;
 	sarg->debug = debug;
+	sarg->mode = cliserv;
+	sarg->ping_time = 10;
 
 	if (use_aes) {
 	    client_connection(sarg);
@@ -937,8 +1032,7 @@ int main(int argc, char *argv[])
 	/* Server, wait for connections */
 
 	/* avoid EADDRINUSE error on bind() */
-	if (setsockopt(sock_fd, SOL_SOCKET, SO_REUSEADDR, (char *)&optval,
-	     sizeof(optval)) < 0) {
+	if (setsockopt(sock_fd, SOL_SOCKET, SO_REUSEADDR, (char *)&optval, sizeof(optval)) < 0) {
 	    syslog(LOG_ERR, "Can not set socket options (%s)\n", strerror(errno));
 	    exit(1);
 	}
@@ -978,6 +1072,8 @@ int main(int argc, char *argv[])
 	    sarg->server_name = server_name;
 	    sarg->web_prefix = web_prefix;
 	    sarg->debug = debug;
+	    sarg->mode = cliserv;
+	    sarg->ping_time = 10;
 
 	    if (pthread_create(&tid, NULL, (void *)&server_thread, (void *)sarg) != 0) {
 		free(sarg->client_ip);
