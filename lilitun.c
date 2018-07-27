@@ -81,6 +81,12 @@ void dump16(char *ptr)
     syslog(LOG_DEBUG, "DUMP16: %s\n", tmp);
 }
 
+void dump_SrcDst(char *p)
+{
+    uint8_t *ptr = (uint8_t *)p;
+    syslog(LOG_DEBUG, "Packet: Src: %d.%d.%d.%d Dst: %d.%d.%d.%d\n", ptr[12], ptr[13], ptr[14], ptr[15], ptr[16], ptr[17], ptr[18], ptr[19]);
+}
+
 /**************************************************************************
  * init_aes: AES key initialization                                       *
  **************************************************************************/
@@ -207,6 +213,7 @@ static int tap2net(server_arg * sarg)
 
     if (sarg->debug) {
 	syslog(LOG_DEBUG, "TAP2NET: Read %d bytes from the tap interface\n", nread);
+	dump_SrcDst(buffer + sizeof(*plength));
     }
 
     nread += sizeof(*plength);
@@ -344,9 +351,19 @@ static int net2tap(server_arg * sarg)
 	    for (i = 16; i < nread_aligned; i += 16) {
 		aes_decrypt(&aes_ctx, (uint8 *) sarg->rbuffer + i, (uint8 *) aes_buffer + i);
 	    }
+
+	    if (sarg->debug) {
+		dump_SrcDst(aes_buffer + sizeof(*plength));
+	    }
+
 	    nwrite = cwrite(sarg->tap_fd, aes_buffer + sizeof(*plength), nread - sizeof(*plength));
 	} else {
 	    /* now buffer[] contains a full packet or frame, write it into the tun/tap interface */
+
+	    if (sarg->debug) {
+		dump_SrcDst(sarg->rbuffer + sizeof(*plength));
+	    }
+
 	    nwrite = cwrite(sarg->tap_fd, sarg->rbuffer + sizeof(*plength), nread - sizeof(*plength));
 	}
 
@@ -727,6 +744,7 @@ static void *server_thread(void *arg)
     }
 
     close(sarg->net_fd);
+    close(sarg->tap_fd);
 
     syslog(LOG_INFO, "[%s] Server thread finished!\n", sarg->client_ip);
 
@@ -873,7 +891,7 @@ void usage(void)
 int main(int argc, char *argv[])
 {
 
-    int tap_fd, option;
+    int option;
     int flags = IFF_TUN;
     char if_name[IFNAMSIZ] = "";
     struct sockaddr_in local, remote;
@@ -972,21 +990,21 @@ int main(int argc, char *argv[])
     /* Ignore PIPE signal and return EPIPE error */
     signal(SIGPIPE, SIG_IGN);
 
-    /* initialize tun/tap interface */
-    if ((tap_fd = tun_alloc(if_name, flags | IFF_NO_PI)) < 0) {
-	syslog(LOG_ERR, "Error connecting to tun/tap interface %s (%s)!\n", if_name, strerror(errno));
-	exit(1);
-    }
-
-    syslog(LOG_INFO, "Successfully connected to interface %s\n", if_name);
-
     if ((sock_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
 	syslog(LOG_ERR, "Can not create socket (%s)\n", strerror(errno));
 	exit(1);
     }
 
     if (cliserv == CLIENT) {
-	/* Client, try to connect to server */
+	int tap_fd;
+
+	/* initialize tun/tap interface */
+	if ((tap_fd = tun_alloc(if_name, flags | IFF_NO_PI)) < 0) {
+	    syslog(LOG_ERR, "Error connecting to tun/tap interface %s (%s)!\n", if_name, strerror(errno));
+	    exit(1);
+	}
+
+	syslog(LOG_INFO, "Successfully connected to interface %s\n", if_name);
 
 	/* assign the destination address */
 	memset(&remote, 0, sizeof(remote));
@@ -1021,10 +1039,12 @@ int main(int argc, char *argv[])
 	}
 
 	pthread_mutex_destroy(&sarg->mutex_net_write);
-	free(sarg);
 
+	close(sarg->tap_fd);
+
+	free(sarg);
     } else {
-	/* Server, wait for connections */
+	int tap_fd;
 
 	/* avoid EADDRINUSE error on bind() */
 	if (setsockopt(sock_fd, SOL_SOCKET, SO_REUSEADDR, (char *)&optval, sizeof(optval)) < 0) {
@@ -1058,6 +1078,15 @@ int main(int argc, char *argv[])
 	    }
 
 	    syslog(LOG_INFO, "Client connected from %s\n", inet_ntoa(remote.sin_addr));
+
+
+	    /* initialize tun/tap interface */
+	    if ((tap_fd = tun_alloc(if_name, flags | IFF_NO_PI | IFF_MULTI_QUEUE)) < 0) {
+		syslog(LOG_ERR, "Error connecting to tun/tap interface %s (%s)!\n", if_name, strerror(errno));
+		exit(1);
+	    }
+
+	    syslog(LOG_INFO, "Successfully connected to interface %s\n", if_name);
 
 	    sarg = malloc(sizeof(server_arg));
 	    sarg->net_fd = net_fd;
