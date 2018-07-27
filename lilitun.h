@@ -14,6 +14,7 @@ typedef struct {
     int vpn_is_alive;
     int debug;
     int ping_time;
+    pthread_mutex_t mutex_net_write;
 } server_arg;
 
 int cwrite(int fd, char *buf, int n);

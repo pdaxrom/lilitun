@@ -194,7 +194,7 @@ int read_n(int fd, char *buf, int n)
  **************************************************************************/
 static int tap2net(server_arg * sarg)
 {
-    int16_t nread, nwrite;
+    int16_t nread, nwrite, nread_aligned;
     char buffer[((BUFSIZE - 1) / 16 + 1) * 16];
     char aes_buffer[((BUFSIZE - 1) / 16 + 1) * 16];
     uint16_t *plength = (uint16_t *) buffer;
@@ -220,7 +220,7 @@ static int tap2net(server_arg * sarg)
 
     if (sarg->use_aes) {
 	int i;
-	int nread_aligned = ((nread - 1) / 16 + 1) * 16;
+	nread_aligned = ((nread - 1) / 16 + 1) * 16;
 	if (nread < nread_aligned) {
 	    memset(buffer + nread, 0, nread_aligned - nread);
 	}
@@ -231,19 +231,20 @@ static int tap2net(server_arg * sarg)
 	if (sarg->debug) {
 	    syslog(LOG_DEBUG, "TAP2NET: Packet size aligned = %d\n", nread_aligned);
 	}
-
-	nwrite = cwrite(sarg->net_fd, aes_buffer, nread_aligned);
-	if (nwrite != nread_aligned) {
-	    syslog(LOG_ERR, "tap2net_loop(): error write buffer (%s)\n", strerror(errno));
-	    return -1;
-	}
-    } else {
-	nwrite = cwrite(sarg->net_fd, buffer, nread);
-	if (nwrite != nread) {
-	    syslog(LOG_ERR, "tap2net_loop(): error write buffer (%s)\n", strerror(errno));
-	    return -1;
-	}
     }
+
+
+    pthread_mutex_lock(&sarg->mutex_net_write);
+
+    nwrite = cwrite(sarg->net_fd, sarg->use_aes ? aes_buffer : buffer, sarg->use_aes ? nread_aligned : nread);
+
+    pthread_mutex_unlock(&sarg->mutex_net_write);
+
+    if (nwrite != (sarg->use_aes ? nread_aligned : nread)) {
+	syslog(LOG_ERR, "tap2net_loop(): error write buffer (%s)\n", strerror(errno));
+	return -1;
+    }
+
 
     if (sarg->debug) {
 	syslog(LOG_DEBUG, "TAP2NET: Written %d bytes to the network\n", nwrite);
@@ -257,10 +258,9 @@ static int tap2net(server_arg * sarg)
  **************************************************************************/
 static int net2tap(server_arg * sarg)
 {
-    int16_t nread, nwrite;
+    int16_t nread, nwrite, nread_aligned;
     char aes_buffer[((BUFSIZE - 1) / 16 + 1) * 16];
     uint16_t *plength;
-    int nread_aligned;
 
     /* data from the network: read it, and write it to the tun/tap interface. 
      * We need to read the length first, and then the packet */
@@ -306,6 +306,7 @@ static int net2tap(server_arg * sarg)
 	} else {
 	    nread = sizeof(*plength);
 	}
+	nwrite = 0;
     } else {
 	nread = ntohs(*plength);
 
@@ -383,11 +384,15 @@ static int send_ping(server_arg * sarg)
     if (sarg->use_aes) {
 	nlen = sizeof(aes_buffer);
 	aes_encrypt(&aes_ctx, (uint8_t *) buffer, (uint8_t *) aes_buffer);
-	nwrite = cwrite(sarg->net_fd, aes_buffer, nlen);
     } else {
 	nlen = sizeof(*plength);
-	nwrite = cwrite(sarg->net_fd, buffer, nlen);
     }
+
+    pthread_mutex_lock(&sarg->mutex_net_write);
+
+    nwrite = cwrite(sarg->net_fd, sarg->use_aes ? aes_buffer : buffer, nlen);
+
+    pthread_mutex_unlock(&sarg->mutex_net_write);
 
     if (nwrite != nlen) {
 	syslog(LOG_ERR, "Error sending ping (%s)\n", strerror(errno));
@@ -498,7 +503,7 @@ static void *net2tap_thread(void *arg)
 	    break;
 	}
 
-	if ((wd_current.tv_sec - wd_old.tv_sec >= sarg->ping_time) && !FD_ISSET(sarg->net_fd, &rfds)) {
+	if (wd_current.tv_sec - wd_old.tv_sec >= sarg->ping_time) {
 	    wd_old = wd_current;
 	    // timeout
 	    if (ping_sent == 3) {
@@ -529,7 +534,11 @@ static void *net2tap_thread(void *arg)
 
 	    total += len;
 	    ping_sent = 0;
-	    wd_old = wd_current;
+	    if (len > 0) {
+		wd_old = wd_current;
+	    } else {
+		syslog(LOG_INFO, "Ping packet.");
+	    }
 	}
     }
 
@@ -717,6 +726,7 @@ static void *server_thread(void *arg)
 
     syslog(LOG_INFO, "[%s] Server thread finished!\n", sarg->client_ip);
 
+    pthread_mutex_destroy(&sarg->mutex_net_write);
     free(sarg->client_ip);
     free(sarg);
 
@@ -998,6 +1008,7 @@ int main(int argc, char *argv[])
 	sarg->debug = debug;
 	sarg->mode = cliserv;
 	sarg->ping_time = 10;
+	pthread_mutex_init(&sarg->mutex_net_write, NULL);
 
 	if (use_aes) {
 	    client_connection(sarg);
@@ -1005,6 +1016,7 @@ int main(int argc, char *argv[])
 	    syslog(LOG_ERR, "Only secure connection enabled!\n");
 	}
 
+	pthread_mutex_destroy(&sarg->mutex_net_write);
 	free(sarg);
 
     } else {
@@ -1053,8 +1065,10 @@ int main(int argc, char *argv[])
 	    sarg->debug = debug;
 	    sarg->mode = cliserv;
 	    sarg->ping_time = 10;
+	    pthread_mutex_init(&sarg->mutex_net_write, NULL);
 
 	    if (pthread_create(&tid, NULL, &server_thread, (void *)sarg) != 0) {
+		pthread_mutex_destroy(&sarg->mutex_net_write);
 		free(sarg->client_ip);
 		free(sarg);
 		syslog(LOG_ERR, "Can not create server thread\n");
