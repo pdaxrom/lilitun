@@ -1,30 +1,67 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
-<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en">
-    <head>
-	<title>500 Internal Server Error</title>
-	<meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
-	<style type="text/css">
-a, a:active {text-decoration: none; color: blue;}
-a:visited {color: #48468F;}
-a:hover, a:focus {text-decoration: underline; color: red;}
-body {background-color: #F5F5F5;}
-h2 {margin-bottom: 12px;}
-table {margin-left: 12px;}
-th, td { font: 90% monospace; text-align: left;}
-th { font-weight: bold; padding-right: 14px; padding-bottom: 3px;}
-td {padding-right: 14px;}
-td.s, th.s {text-align: right;}
-div.list { background-color: white; border-top: 1px solid #646464; border-bottom: 1px solid #646464; padding-top: 10px; padding-bottom: 14px;}
-div.err { font: 90% monospace; color: #F50000; text-align: left;}
-div.foot { font: 90% monospace; color: #787878; padding-top: 4px;}
-	</style>
-    </head>
-    <body>
-	<h2>Internal Server Error</h2>
-	<div class="list">
-	    <div class="err">Unexpected condition was encountered.</div>
+<html>
+<head>
+    <title>500 Internal Server Error</title>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+    <style>
+body {
+    height: 100%;
+    padding: 0;
+    margin: 0;
+    background-color: #ffffff;
+    background-image: url("https://c.wallhere.com/photos/18/9d/nurse_costume_girl-617164.jpg!d");
+    background-position: right bottom;
+    background-size: 30% auto;
+    background-repeat: no-repeat;
+    font: 36px Arial, sans-serif;
+}
+.fullscreenDiv {
+    width: 100%;
+    height: auto;
+    bottom: 0px;
+    top: 0px;
+    left: 0;
+    position: absolute;
+}
+.center {
+    text-align: center;
+    margin-left: auto;
+    margin-right: auto;
+    position: relative;
+    top: 50%;
+    transform: translateY(-50%);
+}
+.err_title {
+    color: red;
+    font-weight: bold;
+}
+    </style>
+<script type="text/javascript">
+var myEmojiSet = new Array(
+    "pics/003-sad-3.png",
+    "pics/005-bored.png",
+    "pics/002-sad-4.png",
+    "pics/007-sad.png",
+    "pics/004-sad-2.png",
+    "pics/001-crying.png",
+    "pics/006-sad-1.png"
+);
+
+function getRandomImage(imgAr, path) {
+    var num = Math.floor( Math.random() * imgAr.length );
+    var img = imgAr[ num ];
+    var imgStr = '<img src="' + img + '" alt = "">';
+    document.write(imgStr);
+    document.close();
+}
+</script>
+</head>
+<body>
+    <div class='fullscreenDiv'>
+	<div class='center'>
+	<div class='err_title'>Internal Server Error</div>
+	<div>Unexpected condition was encountered.</div>
+	<div><script type="text/javascript">getRandomImage(myEmojiSet);</script></div>
 	</div>
-	<div class="foot">Powered by <a href="@SERVER_URL@">@SERVER_NAME@</a></div>
-    </body>
+    </div>
+</body>
 </html>
