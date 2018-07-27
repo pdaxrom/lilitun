@@ -300,7 +300,9 @@ static int net2tap(server_arg * sarg)
     }
 
     if (ntohs(*plength) == 0xffff) {
-	syslog(LOG_INFO, "Ping packet received\n");
+	if (sarg->debug) {
+	    syslog(LOG_DEBUG, "Ping packet received\n");
+	}
 	if (sarg->use_aes) {
 	    nread_aligned = 16;
 	} else {
@@ -510,7 +512,11 @@ static void *net2tap_thread(void *arg)
 		syslog(LOG_INFO, "Ping sent 3 times, no reply, connection timeout.\n");
 		break;
 	    }
-	    syslog(LOG_INFO, "Send ping\n");
+
+	    if (sarg->debug) {
+		syslog(LOG_DEBUG, "Send ping\n");
+	    }
+
 	    if (send_ping(sarg) < 0) {
 		break;
 	    }
@@ -536,8 +542,6 @@ static void *net2tap_thread(void *arg)
 	    ping_sent = 0;
 	    if (len > 0) {
 		wd_old = wd_current;
-	    } else {
-		syslog(LOG_INFO, "Ping packet.");
 	    }
 	}
     }
