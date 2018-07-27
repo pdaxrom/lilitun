@@ -11,11 +11,11 @@ INSTALL = install
 
 all:	$(TARGET)
 
-CFLAGS = -Wall -g
+CFLAGS = -Wall -Wpedantic -g
 
 LDFLAGS = -pthread -g
 
-OBJS = simpletun.o aes.o http.o utils.o getrandom.o
+OBJS = lilitun.o aes.o http.o utils.o getrandom.o
 
 http.o: mime.h
 

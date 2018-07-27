@@ -682,25 +682,21 @@ static void *server_thread(void *arg)
 
 		if (!strncmp(tmp, client_id, sizeof(client_id)) &&
 		    !memcmp(tmp + sizeof(server_id), session_id, sizeof(session_id))) {
+		    pthread_t net2tap_tid;
+		    pthread_t tap2net_tid;
+
 		    syslog(LOG_INFO, "[%s] Start VPN connection\n", sarg->client_ip);
 
 		    sarg->vpn_is_alive = 1;
 
-#if 1
-		    pthread_t net2tap_tid;
-		    pthread_t tap2net_tid;
-
-		    if (pthread_create(&net2tap_tid, NULL, (void *)&net2tap_thread, (void *)sarg) != 0) {
+		    if (pthread_create(&net2tap_tid, NULL, &net2tap_thread, (void *)sarg) != 0) {
 			syslog(LOG_ERR, "[%s] pthread_create(net2tap_thread) (%s)\n", sarg->client_ip, strerror(errno));
-		    } else if (pthread_create(&tap2net_tid, NULL, (void *)&tap2net_thread, (void *)sarg) != 0) {
+		    } else if (pthread_create(&tap2net_tid, NULL, &tap2net_thread, (void *)sarg) != 0) {
 			syslog(LOG_ERR, "[%s] pthread_create(tap2net_thread) (%s)\n", sarg->client_ip, strerror(errno));
 		    } else {
 			(void)pthread_join(net2tap_tid, NULL);
 			(void)pthread_join(tap2net_tid, NULL);
 		    }
-#else
-		    connection_loop(sarg);
-#endif
 		    syslog(LOG_INFO, "[%s] VPN connection finished\n", sarg->client_ip);
 		} else {
 		    syslog(LOG_INFO, "[%s] wrong client_id or session_id, connection closed\n", sarg->client_ip);
@@ -793,7 +789,11 @@ static int client_connection(server_arg * sarg)
 	}
 
 	if (!strncmp(tmp, server_id, sizeof(server_id))) {
+	    pthread_t net2tap_tid;
+	    pthread_t tap2net_tid;
+
 	    syslog(LOG_INFO, "Decrypted server_id is okay!\n");
+
 	    memcpy(tmp, client_id, sizeof(client_id));
 
 	    if (sarg->debug) {
@@ -814,21 +814,14 @@ static int client_connection(server_arg * sarg)
 	    syslog(LOG_INFO, "Start VPN connection\n");
 	    sarg->vpn_is_alive = 1;
 
-#if 1
-	    pthread_t net2tap_tid;
-	    pthread_t tap2net_tid;
-
-	    if (pthread_create(&net2tap_tid, NULL, (void *)&net2tap_thread, (void *)sarg) != 0) {
+	    if (pthread_create(&net2tap_tid, NULL, &net2tap_thread, (void *)sarg) != 0) {
 		syslog(LOG_ERR, "pthread_create(net2tap_thread) (%s)\n", strerror(errno));
-	    } else if (pthread_create(&tap2net_tid, NULL, (void *)&tap2net_thread, (void *)sarg) != 0) {
+	    } else if (pthread_create(&tap2net_tid, NULL, &tap2net_thread, (void *)sarg) != 0) {
 		syslog(LOG_ERR, "pthread_create(tap2net_thread) (%s)\n", strerror(errno));
 	    } else {
 		(void)pthread_join(net2tap_tid, NULL);
 		(void)pthread_join(tap2net_tid, NULL);
 	    }
-#else
-	    connection_loop(sarg);
-#endif
 	} else {
 	    syslog(LOG_INFO, "Wrong decrypted server_id\n");
 	}
@@ -1061,7 +1054,7 @@ int main(int argc, char *argv[])
 	    sarg->mode = cliserv;
 	    sarg->ping_time = 10;
 
-	    if (pthread_create(&tid, NULL, (void *)&server_thread, (void *)sarg) != 0) {
+	    if (pthread_create(&tid, NULL, &server_thread, (void *)sarg) != 0) {
 		free(sarg->client_ip);
 		free(sarg);
 		syslog(LOG_ERR, "Can not create server thread\n");
