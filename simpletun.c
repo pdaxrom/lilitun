@@ -407,13 +407,43 @@ static void *tap2net_thread(void *arg)
     unsigned long int total = 0;
 
     while (sarg->vpn_is_alive) {
-	int len = tap2net(sarg);
+	int ret;
+	fd_set rfds;
+	struct timeval tv;
 
-	if (len < 0) {
+	tv.tv_sec = sarg->ping_time;
+	tv.tv_usec = 0;
+
+	FD_ZERO(&rfds);
+	FD_SET(sarg->tap_fd, &rfds);
+
+	ret = select(sarg->tap_fd + 1, &rfds, NULL, NULL, &tv);
+
+	if (ret < 0 && errno == EINTR) {
+	    continue;
+	}
+
+	if (ret < 0) {
+	    syslog(LOG_ERR, "Select error (%s)\n", strerror(errno));
 	    break;
 	}
 
-	total += len;
+	if (!ret) {
+	    if (sarg->debug) {
+		syslog(LOG_DEBUG, "Select tap_fd timeout, continue\n");
+	    }
+	    continue;
+	}
+
+	if (FD_ISSET(sarg->tap_fd, &rfds)) {
+	    int len = tap2net(sarg);
+
+	    if (len < 0) {
+		break;
+	    }
+
+	    total += len;
+	}
     }
 
     syslog(LOG_INFO, "Total written to network: %lu\n", total);
@@ -429,39 +459,7 @@ static void *tap2net_thread(void *arg)
 static void *net2tap_thread(void *arg)
 {
     server_arg *sarg = (server_arg *) arg;
-
     unsigned long int total = 0;
-
-    sarg->rbuffer = NULL;
-
-    while (sarg->vpn_is_alive) {
-	int len = net2tap(sarg);
-
-	if (len < 0) {
-	    break;
-	}
-
-	total += len;
-    }
-
-    syslog(LOG_INFO, "Total written from network: %lu\n", total);
-
-    if (sarg->rbuffer) {
-	free(sarg->rbuffer);
-    }
-
-    sarg->vpn_is_alive = 0;
-
-    return NULL;
-}
-
-/**************************************************************************
- * connection_loop:                                                       *
- **************************************************************************/
-int connection_loop(server_arg * sarg)
-{
-    int maxfd;
-    unsigned long int tap2net_total = 0, net2tap_total = 0;
     int ping_sent = 0;
     struct timespec wd_old;
 
@@ -472,31 +470,27 @@ int connection_loop(server_arg * sarg)
 
     sarg->rbuffer = NULL;
 
-    /* use select() to handle two descriptors at once */
-    maxfd = (sarg->tap_fd > sarg->net_fd) ? sarg->tap_fd : sarg->net_fd;
-
     while (sarg->vpn_is_alive) {
 	int ret;
-	fd_set rd_set;
+	fd_set rfds;
 	struct timeval tv;
 	struct timespec wd_current;
 
 	tv.tv_sec = sarg->ping_time;
 	tv.tv_usec = 0;
 
-	FD_ZERO(&rd_set);
-	FD_SET(sarg->tap_fd, &rd_set);
-	FD_SET(sarg->net_fd, &rd_set);
+	FD_ZERO(&rfds);
+	FD_SET(sarg->net_fd, &rfds);
 
-	ret = select(maxfd + 1, &rd_set, NULL, NULL, &tv);
+	ret = select(sarg->net_fd + 1, &rfds, NULL, NULL, &tv);
 
 	if (ret < 0 && errno == EINTR) {
 	    continue;
 	}
 
 	if (ret < 0) {
-	    syslog(LOG_ERR, "connection_loop(): select error (%s)\n", strerror(errno));
-	    return 1;
+	    syslog(LOG_ERR, "Select error (%s)\n", strerror(errno));
+	    break;
 	}
 
 	if (clock_gettime(CLOCK_MONOTONIC, &wd_current) == -1) {
@@ -504,10 +498,10 @@ int connection_loop(server_arg * sarg)
 	    break;
 	}
 
-	if ((wd_current.tv_sec - wd_old.tv_sec > sarg->ping_time) && !FD_ISSET(sarg->net_fd, &rd_set)) {
+	if ((wd_current.tv_sec - wd_old.tv_sec >= sarg->ping_time) && !FD_ISSET(sarg->net_fd, &rfds)) {
 	    wd_old = wd_current;
 	    // timeout
-	    if (ping_sent > 3) {
+	    if (ping_sent == 3) {
 		syslog(LOG_INFO, "Ping sent 3 times, no reply, connection timeout.\n");
 		break;
 	    }
@@ -520,34 +514,26 @@ int connection_loop(server_arg * sarg)
 
 	if (!ret) {
 	    if (sarg->debug) {
-		syslog(LOG_DEBUG, "Select timeout, continue\n");
+		syslog(LOG_DEBUG, "Select net_fd timeout, continue\n");
 	    }
 	    continue;
 	}
 
-	if (FD_ISSET(sarg->tap_fd, &rd_set)) {
-	    /* data from tun/tap: just read it and write it to the network */
-	    int len = tap2net(sarg);
 
-	    if (len < 0) {
-		break;
-	    }
-
-	    tap2net_total += len;
-	}
-
-	if (FD_ISSET(sarg->net_fd, &rd_set)) {
+	if (FD_ISSET(sarg->net_fd, &rfds)) {
 	    int len = net2tap(sarg);
 
 	    if (len < 0) {
 		break;
 	    }
 
-	    net2tap_total += len;
-
+	    total += len;
 	    ping_sent = 0;
+	    wd_old = wd_current;
 	}
     }
+
+    syslog(LOG_INFO, "Total written from network: %lu\n", total);
 
     if (sarg->rbuffer) {
 	free(sarg->rbuffer);
@@ -555,7 +541,7 @@ int connection_loop(server_arg * sarg)
 
     sarg->vpn_is_alive = 0;
 
-    return 0;
+    return NULL;
 }
 
 /**************************************************************************
