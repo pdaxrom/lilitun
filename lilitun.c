@@ -850,7 +850,7 @@ static int client_connection(server_arg * sarg)
 void usage(void)
 {
     fprintf(stderr, "Usage:\n");
-    fprintf(stderr, "%s -i <ifacename> [-s|-c <serverIP>] [-p <port>] [-u|-a] [-d]\n", progname);
+    fprintf(stderr, "%s -i <ifacename> [-s|-c <serverIP>] [-p <port>] [-k <keyfile>] [-u|-a] [-w /path/to/www] [-n <webserver name>] [-d] [-e]\n", progname);
     fprintf(stderr, "%s -h\n", progname);
     fprintf(stderr, "\n");
     fprintf(stderr, "-i <ifacename>: Name of interface to use (mandatory)\n");
