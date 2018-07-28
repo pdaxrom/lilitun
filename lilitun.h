@@ -3,21 +3,31 @@
 #define BUFSIZE 2048
 
 typedef struct {
+    pthread_mutex_t mutex_net_write;
     int net_fd;
     int tap_fd;
+
     int use_aes;
     aes_context *aes_ctx;
+
     int rbuffer_size;
     char *rbuffer;
     int rbuffered;
+
+    char *session_key;
+    char *session_key_aes;
+    char *session_key_hex;
+    char *session_id;
+
     int mode;
+
     char *client_ip;
     char *server_name;
     char *web_prefix;
+
     int vpn_is_alive;
     int debug;
     int ping_time;
-    pthread_mutex_t mutex_net_write;
 } server_arg;
 
 extern char server_id[6];

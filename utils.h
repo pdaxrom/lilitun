@@ -9,4 +9,7 @@ char *header_get_spec(char *header, char *str, int n);
 
 char *url_get_path(char *url, char *path, int n);
 
+int generate_session_key(server_arg * sarg);
+void free_session_key(server_arg *sarg);
+
 #endif

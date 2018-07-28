@@ -181,10 +181,15 @@ int cwrite(int fd, char *buf, int n)
 static void *server_thread(void *arg)
 {
     server_arg *sarg = (server_arg *) arg;
+    int connection_is_alive = 1;
 
     pthread_detach(pthread_self());
 
-    while (1) {
+    if (generate_session_key(sarg) < 0) {
+	connection_is_alive = 0;
+    }
+
+    while (connection_is_alive) {
 	char header[2048];
 	char h_method[16];
 	char h_url[256];
@@ -205,11 +210,12 @@ static void *server_thread(void *arg)
 
 	syslog(LOG_INFO, "[%s] METHOD: '%s' URL: '%s' SPEC: '%s'\n", sarg->client_ip, h_method, h_url, h_spec);
 
-	if (!strcmp(h_method, "GET")) {
+	if (!strcmp(h_method, "GET") || !strcmp(h_method, "HEAD")) {
 	    char *path;
 	    char *file_path;
 	    char *tmp_path;
 	    struct stat sb;
+	    int head_only = (!strcmp(h_method, "HEAD")) ? 1 : 0;
 
 	    path = url_get_path(h_url, NULL, 0);
 
@@ -247,7 +253,7 @@ static void *server_thread(void *arg)
 
 	    if (file_path && !strncmp(file_path, sarg->web_prefix, strlen(sarg->web_prefix))) {
 		syslog(LOG_INFO, "[%s] File found: %s\n", sarg->client_ip, file_path);
-		send_file(sarg, file_path);
+		send_file(sarg, file_path, head_only);
 		if (file_path) {
 		    free(file_path);
 		}
@@ -267,6 +273,8 @@ static void *server_thread(void *arg)
 	    break;
 	}
     }
+
+    free_session_key(sarg);
 
     close(sarg->net_fd);
     close(sarg->tap_fd);

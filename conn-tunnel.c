@@ -405,7 +405,6 @@ int server_tunnel(server_arg * sarg, char *h_url)
 	int nread;
 	char tmp[16];
 	char aes_tmp[sizeof(tmp)];
-	char session_id[sizeof(tmp) - sizeof(server_id)];
 
 	syslog(LOG_INFO, "[%s] CONNECT to: %s\n", sarg->client_ip, h_url);
 	char *resp = http_response_begin(200, "OK");
@@ -417,30 +416,12 @@ int server_tunnel(server_arg * sarg, char *h_url)
 	}
 	free(resp);
 
-	memcpy(tmp, server_id, sizeof(server_id));
-	if (my_getrandom(tmp + sizeof(server_id), sizeof(tmp) - sizeof(server_id), 0) == -1) {
-	    syslog(LOG_ERR, "[%s] getrandom (%s)\n", sarg->client_ip, strerror(errno));
-	    return -1;
-	}
-	// Store random key as session id
-	memcpy(session_id, tmp + sizeof(server_id), sizeof(session_id));
-
-	if (sarg->debug) {
-	    dump16(tmp);
-	}
-
-	aes_encrypt(sarg->aes_ctx, (uint8_t *) tmp, (uint8_t *) aes_tmp);
-
-	if (sarg->debug) {
-	    dump16(aes_tmp);
-	}
-
-	if (cwrite(sarg->net_fd, aes_tmp, sizeof(aes_tmp)) != sizeof(aes_tmp)) {
+	if (cwrite(sarg->net_fd, sarg->session_key_aes, 16) != 16) {
 	    syslog(LOG_ERR, "[%s] Write encrypted header\n", sarg->client_ip);
 	    return -1;
 	}
 
-	nread = cread(sarg->net_fd, aes_tmp, sizeof(aes_tmp));
+	nread = cread(sarg->net_fd, aes_tmp, 16);
 	if (nread <= 0) {
 	    syslog(LOG_INFO, "[%s] no data read for client_id\n", sarg->client_ip);
 	    return -1;
@@ -456,7 +437,8 @@ int server_tunnel(server_arg * sarg, char *h_url)
 	    dump16(tmp);
 	}
 
-	if (!strncmp(tmp, client_id, sizeof(client_id)) && !memcmp(tmp + sizeof(server_id), session_id, sizeof(session_id))) {
+	if (!strncmp(tmp, client_id, sizeof(client_id))
+	    && !memcmp(tmp + sizeof(server_id), sarg->session_id, 16 - sizeof(server_id))) {
 	    pthread_t net2tap_tid;
 	    pthread_t tap2net_tid;
 

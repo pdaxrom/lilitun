@@ -11,6 +11,6 @@ char *http_response_end(char *resp);
 
 int send_404(server_arg * s, char *url);
 int send_error(server_arg * s, int e, char *t);
-int send_file(server_arg * s, char *f);
+int send_file(server_arg * s, char *f, int h);
 
 #endif

@@ -11,6 +11,7 @@
 #include "aes.h"
 #include "lilitun.h"
 #include "utils.h"
+#include "http.h"
 
 #define BUF_SIZE	4096
 #define BUF_RESP_SIZE	1024
@@ -123,6 +124,14 @@ char *http_response_add_range(char *resp, size_t from, size_t to,
     return resp;
 }
 
+char *http_response_add_hash(char *resp, char *hash)
+{
+    char *ptr = resp + strlen(resp);
+    snprintf(ptr, BUF_RESP_SIZE - strlen(resp), "ETag: \"%s\"\n", hash);
+
+    return resp;
+}
+
 char *http_response_end(char *resp)
 {
     return strncat(resp, "\n", BUF_RESP_SIZE);
@@ -189,7 +198,7 @@ int send_error(server_arg * s, int e, char *t)
     return 0;
 }
 
-int send_file(server_arg * s, char *f)
+int send_file(server_arg * s, char *f, int h)
 {
     char page[BUF_SIZE];
     struct stat sb;
@@ -204,6 +213,7 @@ int send_file(server_arg * s, char *f)
     }
 
     resp = http_response_begin(200, "OK");
+    http_response_add_hash(resp, s->session_key_hex);
     http_response_add_time_stamp(resp);
     http_response_add_server(resp, s->server_name);
     http_response_add_modtime_stamp(resp, &sb.st_mtime);
@@ -218,16 +228,18 @@ int send_file(server_arg * s, char *f)
     }
     free(resp);
 
-    while (sb.st_size > 0) {
-	int len = (sb.st_size > sizeof(page)) ? sizeof(page) : sb.st_size;
-	int nread = fread(page, 1, len, inf);
-	if (nread != len) {
-	    break;
+    if (!h) {
+	while (sb.st_size > 0) {
+	    int len = (sb.st_size > sizeof(page)) ? sizeof(page) : sb.st_size;
+	    int nread = fread(page, 1, len, inf);
+	    if (nread != len) {
+		break;
+	    }
+	    if (cwrite(s->net_fd, page, nread) != nread) {
+		break;
+	    }
+	    sb.st_size -= nread;
 	}
-	if (cwrite(s->net_fd, page, nread) != nread) {
-	    break;
-	}
-	sb.st_size -= nread;
     }
 
     fclose(inf);
