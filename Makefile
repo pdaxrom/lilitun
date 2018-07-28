@@ -15,7 +15,7 @@ CFLAGS = -Wall -Wpedantic -g
 
 LDFLAGS = -pthread -g
 
-OBJS = lilitun.o aes.o http.o utils.o getrandom.o
+OBJS = lilitun.o aes.o http.o utils.o getrandom.o conn-tunnel.o http-tunnel.o
 
 http.o: mime.h
 

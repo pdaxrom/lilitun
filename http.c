@@ -8,6 +8,7 @@
 #include <time.h>
 #include <syslog.h>
 #include <errno.h>
+#include "aes.h"
 #include "lilitun.h"
 #include "utils.h"
 
