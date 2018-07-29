@@ -6,6 +6,8 @@ typedef struct {
     pthread_mutex_t mutex_net_write;
     int net_fd;
     int tap_fd;
+    char *tap_if_name;
+    int tap_flags;
 
     int use_aes;
     aes_context *aes_ctx;
@@ -35,6 +37,8 @@ extern char client_id[6];
 
 void dump16(char *ptr);
 void dump_SrcDst(char *p);
+
+int tun_alloc(char *dev, int flags);
 
 int cread(int fd, char *buf, int n);
 int cwrite(int fd, char *buf, int n);

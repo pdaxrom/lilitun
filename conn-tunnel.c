@@ -442,7 +442,13 @@ int server_tunnel(server_arg * sarg, char *h_url)
 	    pthread_t net2tap_tid;
 	    pthread_t tap2net_tid;
 
-	    syslog(LOG_INFO, "[%s] Start VPN connection\n", sarg->client_ip);
+	    /* initialize tun/tap interface */
+	    if ((sarg->tap_fd = tun_alloc(sarg->tap_if_name, sarg->tap_flags | IFF_NO_PI | IFF_MULTI_QUEUE)) < 0) {
+		syslog(LOG_ERR, "Error connecting to tun/tap interface %s (%s)!\n", sarg->tap_if_name, strerror(errno));
+		return -1;
+	    }
+
+	    syslog(LOG_INFO, "Successfully connected to interface %s\n", sarg->tap_if_name);
 
 	    sarg->vpn_is_alive = 1;
 
@@ -451,6 +457,8 @@ int server_tunnel(server_arg * sarg, char *h_url)
 	    } else if (pthread_create(&tap2net_tid, NULL, &tap2net_thread, (void *)sarg) != 0) {
 		syslog(LOG_ERR, "[%s] pthread_create(tap2net_thread) (%s)\n", sarg->client_ip, strerror(errno));
 	    } else {
+		syslog(LOG_INFO, "[%s] VPN connection started\n", sarg->client_ip);
+
 		(void)pthread_join(net2tap_tid, NULL);
 		(void)pthread_join(tap2net_tid, NULL);
 	    }
@@ -556,7 +564,14 @@ int client_tunnel(server_arg * sarg)
 		return 1;
 	    }
 
-	    syslog(LOG_INFO, "Start VPN connection\n");
+	    /* initialize tun/tap interface */
+	    if ((sarg->tap_fd = tun_alloc(sarg->tap_if_name, sarg->tap_flags | IFF_NO_PI)) < 0) {
+		syslog(LOG_ERR, "Error connecting to tun/tap interface %s (%s)!\n", sarg->tap_if_name, strerror(errno));
+		return 1;
+	    }
+
+	    syslog(LOG_INFO, "Successfully connected to interface %s\n", sarg->tap_if_name);
+
 	    sarg->vpn_is_alive = 1;
 
 	    if (pthread_create(&net2tap_tid, NULL, &net2tap_thread, (void *)sarg) != 0) {
@@ -564,6 +579,8 @@ int client_tunnel(server_arg * sarg)
 	    } else if (pthread_create(&tap2net_tid, NULL, &tap2net_thread, (void *)sarg) != 0) {
 		syslog(LOG_ERR, "pthread_create(tap2net_thread) (%s)\n", strerror(errno));
 	    } else {
+		syslog(LOG_INFO, "VPN connection started\n");
+
 		(void)pthread_join(net2tap_tid, NULL);
 		(void)pthread_join(tap2net_tid, NULL);
 	    }

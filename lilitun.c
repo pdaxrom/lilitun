@@ -418,16 +418,6 @@ int main(int argc, char *argv[])
     }
 
     if (cliserv == CLIENT) {
-	int tap_fd;
-
-	/* initialize tun/tap interface */
-	if ((tap_fd = tun_alloc(if_name, flags | IFF_NO_PI)) < 0) {
-	    syslog(LOG_ERR, "Error connecting to tun/tap interface %s (%s)!\n", if_name, strerror(errno));
-	    exit(1);
-	}
-
-	syslog(LOG_INFO, "Successfully connected to interface %s\n", if_name);
-
 	/* assign the destination address */
 	memset(&remote, 0, sizeof(remote));
 	remote.sin_family = AF_INET;
@@ -445,7 +435,8 @@ int main(int argc, char *argv[])
 
 	server_arg *sarg = malloc(sizeof(server_arg));
 	sarg->net_fd = net_fd;
-	sarg->tap_fd = tap_fd;
+	sarg->tap_if_name = if_name;
+	sarg->tap_flags = flags;
 	sarg->use_aes = use_aes;
 	sarg->aes_ctx = &aes_ctx;
 	sarg->server_name = server_name;
@@ -488,7 +479,6 @@ int main(int argc, char *argv[])
 	}
 
 	while (1) {
-	    int tap_fd;
 	    pthread_t tid;
 	    server_arg *sarg;
 
@@ -502,18 +492,10 @@ int main(int argc, char *argv[])
 
 	    syslog(LOG_INFO, "Client connected from %s\n", inet_ntoa(remote.sin_addr));
 
-
-	    /* initialize tun/tap interface */
-	    if ((tap_fd = tun_alloc(if_name, flags | IFF_NO_PI | IFF_MULTI_QUEUE)) < 0) {
-		syslog(LOG_ERR, "Error connecting to tun/tap interface %s (%s)!\n", if_name, strerror(errno));
-		exit(1);
-	    }
-
-	    syslog(LOG_INFO, "Successfully connected to interface %s\n", if_name);
-
 	    sarg = malloc(sizeof(server_arg));
 	    sarg->net_fd = net_fd;
-	    sarg->tap_fd = tap_fd;
+	    sarg->tap_if_name = if_name;
+	    sarg->tap_flags = flags;
 	    sarg->use_aes = use_aes;
 	    sarg->aes_ctx = &aes_ctx;
 	    sarg->client_ip = strdup(inet_ntoa(remote.sin_addr));
