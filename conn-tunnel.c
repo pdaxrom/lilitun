@@ -405,6 +405,8 @@ int server_tunnel(server_arg * sarg, char *h_url)
 	int nread;
 	char tmp[16];
 	char aes_tmp[sizeof(tmp)];
+	pthread_t net2tap_tid;
+	pthread_t tap2net_tid;
 
 	syslog(LOG_INFO, "[%s] CONNECT to: %s\n", sarg->client_ip, h_url);
 	char *resp = http_response_begin(200, "OK");
@@ -416,57 +418,56 @@ int server_tunnel(server_arg * sarg, char *h_url)
 	}
 	free(resp);
 
-	if (cwrite(sarg->net_fd, sarg->session_key_aes, 16) != 16) {
-	    syslog(LOG_ERR, "[%s] Write encrypted header\n", sarg->client_ip);
-	    return -1;
-	}
-
-	nread = cread(sarg->net_fd, aes_tmp, 16);
-	if (nread <= 0) {
-	    syslog(LOG_INFO, "[%s] no data read for client_id\n", sarg->client_ip);
-	    return -1;
-	}
-
-	if (sarg->debug) {
-	    dump16(aes_tmp);
-	}
-
-	aes_decrypt(sarg->aes_ctx, (uint8_t *) aes_tmp, (uint8_t *) tmp);
-
-	if (sarg->debug) {
-	    dump16(tmp);
-	}
-
-	if (!strncmp(tmp, client_id, sizeof(client_id))
-	    && !memcmp(tmp + sizeof(server_id), sarg->session_id, 16 - sizeof(server_id))) {
-	    pthread_t net2tap_tid;
-	    pthread_t tap2net_tid;
-
-	    /* initialize tun/tap interface */
-	    if ((sarg->tap_fd = tun_alloc(sarg->tap_if_name, sarg->tap_flags | IFF_NO_PI | IFF_MULTI_QUEUE)) < 0) {
-		syslog(LOG_ERR, "Error connecting to tun/tap interface %s (%s)!\n", sarg->tap_if_name, strerror(errno));
+	if (sarg->auth_completed == 0) {
+	    if (cwrite(sarg->net_fd, sarg->session_key_aes, 16) != 16) {
+		syslog(LOG_ERR, "[%s] Write encrypted header\n", sarg->client_ip);
 		return -1;
 	    }
 
-	    syslog(LOG_INFO, "Successfully connected to interface %s\n", sarg->tap_if_name);
-
-	    sarg->vpn_is_alive = 1;
-
-	    if (pthread_create(&net2tap_tid, NULL, &net2tap_thread, (void *)sarg) != 0) {
-		syslog(LOG_ERR, "[%s] pthread_create(net2tap_thread) (%s)\n", sarg->client_ip, strerror(errno));
-	    } else if (pthread_create(&tap2net_tid, NULL, &tap2net_thread, (void *)sarg) != 0) {
-		syslog(LOG_ERR, "[%s] pthread_create(tap2net_thread) (%s)\n", sarg->client_ip, strerror(errno));
-	    } else {
-		syslog(LOG_INFO, "[%s] VPN connection started\n", sarg->client_ip);
-
-		(void)pthread_join(net2tap_tid, NULL);
-		(void)pthread_join(tap2net_tid, NULL);
+	    nread = cread(sarg->net_fd, aes_tmp, 16);
+	    if (nread <= 0) {
+		syslog(LOG_INFO, "[%s] no data read for client_id\n", sarg->client_ip);
+		return -1;
 	    }
-	    syslog(LOG_INFO, "[%s] VPN connection finished\n", sarg->client_ip);
-	} else {
-	    syslog(LOG_INFO, "[%s] wrong client_id or session_id, connection closed\n", sarg->client_ip);
+
+	    if (sarg->debug) {
+		dump16(aes_tmp);
+	    }
+
+	    aes_decrypt(sarg->aes_ctx, (uint8_t *) aes_tmp, (uint8_t *) tmp);
+
+	    if (sarg->debug) {
+		dump16(tmp);
+	    }
+
+	    if (!strncmp(tmp, client_id, sizeof(client_id))
+		&& !memcmp(tmp + sizeof(server_id), sarg->session_id, 16 - sizeof(server_id))) {
+		syslog(LOG_INFO, "[%s] Decrypted client_id and session_id are okay!\n", sarg->client_ip);
+	    } else {
+		syslog(LOG_INFO, "[%s] wrong client_id or session_id, connection closed\n", sarg->client_ip);
+		return -1;
+	    }
+	}
+
+	/* initialize tun/tap interface */
+	if ((sarg->tap_fd = tun_alloc(sarg->tap_if_name, sarg->tap_flags | IFF_NO_PI | IFF_MULTI_QUEUE)) < 0) {
+	    syslog(LOG_ERR, "[%s] Error connecting to tun/tap interface %s (%s)!\n", sarg->client_ip, sarg->tap_if_name, strerror(errno));
 	    return -1;
 	}
+
+	sarg->vpn_is_alive = 1;
+
+	if (pthread_create(&net2tap_tid, NULL, &net2tap_thread, (void *)sarg) != 0) {
+	    syslog(LOG_ERR, "[%s] pthread_create(net2tap_thread) (%s)\n", sarg->client_ip, strerror(errno));
+	} else if (pthread_create(&tap2net_tid, NULL, &tap2net_thread, (void *)sarg) != 0) {
+	    syslog(LOG_ERR, "[%s] pthread_create(tap2net_thread) (%s)\n", sarg->client_ip, strerror(errno));
+	} else {
+	    syslog(LOG_INFO, "[%s] VPN connection started\n", sarg->client_ip);
+
+	    (void)pthread_join(net2tap_tid, NULL);
+	    (void)pthread_join(tap2net_tid, NULL);
+	}
+	syslog(LOG_INFO, "[%s] VPN connection finished\n", sarg->client_ip);
     } else {
 	syslog(LOG_INFO, "[%s] http error: Forbidden\n", sarg->client_ip);
 	send_error(sarg, 403, "Forbidden");
@@ -485,6 +486,7 @@ int client_tunnel(server_arg * sarg)
     char h_method[16];
     char h_url[256];
     char h_spec[16];
+
     static char *req = "CONNECT / HTTP/1.1\n\n";
 
     if (cwrite(sarg->net_fd, req, strlen(req)) != strlen(req)) {
@@ -509,43 +511,48 @@ int client_tunnel(server_arg * sarg)
     syslog(LOG_INFO, "RESPONSE: '%s' STATUS: '%s' MESSAGE: '%s'\n", h_method, h_url, h_spec);
 
     if (!strcmp(h_method, "HTTP/1.1") && !strcmp(h_url, "200") && !strcmp(h_spec, "OK")) {
-	char tmp[16];
-	char aes_tmp[16];
+	pthread_t net2tap_tid;
+	pthread_t tap2net_tid;
 
-	char *ptr = strstr(header, "\n\n");
-	if (!ptr) {
-	    syslog(LOG_ERR, "Incomplete response header\n");
-	    return 1;
-	}
+	if (sarg->auth_type == 0) {
+	    char tmp[16];
+	    char aes_tmp[16];
 
-	ptr += 2;
-	int received = nread - (ptr - header);
-
-	if (received < 16) {
-	    nread = cread(sarg->net_fd, aes_tmp, sizeof(aes_tmp) - received);
-	    if (nread <= 0) {
-		syslog(LOG_ERR, "no data read in client_connection (%s)\n", strerror(errno));
+	    char *ptr = strstr(header, "\n\n");
+	    if (!ptr) {
+		syslog(LOG_ERR, "Incomplete response header\n");
 		return 1;
 	    }
-	} else {
-	    memcpy(aes_tmp, ptr, 16);
-	}
 
-	if (sarg->debug) {
-	    dump16(aes_tmp);
-	}
+	    ptr += 2;
+	    int received = nread - (ptr - header);
 
-	aes_decrypt(sarg->aes_ctx, (uint8_t *) aes_tmp, (uint8_t *) tmp);
+	    if (received < 16) {
+		nread = cread(sarg->net_fd, aes_tmp, sizeof(aes_tmp) - received);
+		if (nread <= 0) {
+		    syslog(LOG_ERR, "no data read in client_connection (%s)\n", strerror(errno));
+		    return 1;
+		}
+	    } else {
+		memcpy(aes_tmp, ptr, 16);
+	    }
 
-	if (sarg->debug) {
-	    dump16(tmp);
-	}
+	    if (sarg->debug) {
+		dump16(aes_tmp);
+	    }
 
-	if (!strncmp(tmp, server_id, sizeof(server_id))) {
-	    pthread_t net2tap_tid;
-	    pthread_t tap2net_tid;
+	    aes_decrypt(sarg->aes_ctx, (uint8_t *) aes_tmp, (uint8_t *) tmp);
 
-	    syslog(LOG_INFO, "Decrypted server_id is okay!\n");
+	    if (sarg->debug) {
+		dump16(tmp);
+	    }
+
+	    if (!strncmp(tmp, server_id, sizeof(server_id))) {
+		syslog(LOG_INFO, "Decrypted server_id is okay!\n");
+	    } else {
+		syslog(LOG_INFO, "Wrong decrypted server_id\n");
+		return 1;
+	    }
 
 	    memcpy(tmp, client_id, sizeof(client_id));
 
@@ -563,29 +570,27 @@ int client_tunnel(server_arg * sarg)
 		syslog(LOG_ERR, "Error send client_id (%s)\n", strerror(errno));
 		return 1;
 	    }
+	}
 
-	    /* initialize tun/tap interface */
-	    if ((sarg->tap_fd = tun_alloc(sarg->tap_if_name, sarg->tap_flags | IFF_NO_PI)) < 0) {
-		syslog(LOG_ERR, "Error connecting to tun/tap interface %s (%s)!\n", sarg->tap_if_name, strerror(errno));
-		return 1;
-	    }
+	/* initialize tun/tap interface */
+	if ((sarg->tap_fd = tun_alloc(sarg->tap_if_name, sarg->tap_flags | IFF_NO_PI)) < 0) {
+	    syslog(LOG_ERR, "Error connecting to tun/tap interface %s (%s)!\n", sarg->tap_if_name, strerror(errno));
+	    return 1;
+	}
 
-	    syslog(LOG_INFO, "Successfully connected to interface %s\n", sarg->tap_if_name);
+	syslog(LOG_INFO, "Successfully connected to interface %s\n", sarg->tap_if_name);
 
-	    sarg->vpn_is_alive = 1;
+	sarg->vpn_is_alive = 1;
 
-	    if (pthread_create(&net2tap_tid, NULL, &net2tap_thread, (void *)sarg) != 0) {
-		syslog(LOG_ERR, "pthread_create(net2tap_thread) (%s)\n", strerror(errno));
-	    } else if (pthread_create(&tap2net_tid, NULL, &tap2net_thread, (void *)sarg) != 0) {
-		syslog(LOG_ERR, "pthread_create(tap2net_thread) (%s)\n", strerror(errno));
-	    } else {
-		syslog(LOG_INFO, "VPN connection started\n");
-
-		(void)pthread_join(net2tap_tid, NULL);
-		(void)pthread_join(tap2net_tid, NULL);
-	    }
+	if (pthread_create(&net2tap_tid, NULL, &net2tap_thread, (void *)sarg) != 0) {
+	    syslog(LOG_ERR, "pthread_create(net2tap_thread) (%s)\n", strerror(errno));
+	} else if (pthread_create(&tap2net_tid, NULL, &tap2net_thread, (void *)sarg) != 0) {
+	    syslog(LOG_ERR, "pthread_create(tap2net_thread) (%s)\n", strerror(errno));
 	} else {
-	    syslog(LOG_INFO, "Wrong decrypted server_id\n");
+	    syslog(LOG_INFO, "VPN connection started\n");
+
+	    (void)pthread_join(net2tap_tid, NULL);
+	    (void)pthread_join(tap2net_tid, NULL);
 	}
 
 	syslog(LOG_INFO, "VPN connection finished\n");

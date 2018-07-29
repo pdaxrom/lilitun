@@ -65,6 +65,20 @@ char *header_get_spec(char *header, char *str, int n)
     return NULL;
 }
 
+char *header_get_field(char *header, char *field, char *str, int n)
+{
+    char *tmp = strstr(header, field);
+    if (tmp) {
+	char *tmp1 = strchr(tmp, ':');
+	if (tmp1) {
+	    for (tmp1++; *tmp1 == ' '; tmp1++);
+	    for (tmp = tmp1; *tmp != 0 && *tmp != '\n' && *tmp != '\r'; tmp++);
+	    return copy_str(str, n, tmp1, tmp - tmp1);
+	}
+    }
+    return NULL;
+}
+
 char *url_get_path(char *url, char *path, int n)
 {
     int i;

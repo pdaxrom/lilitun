@@ -185,6 +185,7 @@ static void *server_thread(void *arg)
 
     pthread_detach(pthread_self());
 
+    sarg->auth_completed = 0;
     if (generate_session_key(sarg) < 0) {
 	connection_is_alive = 0;
     }
@@ -194,21 +195,35 @@ static void *server_thread(void *arg)
 	char h_method[16];
 	char h_url[256];
 	char h_spec[16];
+	char f_host[256];
+	char f_user_agent[256];
+	char f_referer[256];
 
-	int nread = cread(sarg->net_fd, header, sizeof(header));
+	int nread = cread(sarg->net_fd, header, sizeof(header) - 1);
 	if (nread <= 0) {
 	    syslog(LOG_ERR, "[%s] No more data read in server_thread (%s)\n", sarg->client_ip, strerror(errno));
 	    break;
 	}
-	if (sarg->debug) {
-	    syslog(LOG_DEBUG, "[%s] HTTP read: [\n%s\n]\n", sarg->client_ip, header);
-	}
+
+	header[nread] = 0;
+
+//	if (sarg->debug) {
+//	    syslog(LOG_DEBUG, "[%s] HTTP read: [\n%s\n]\n", sarg->client_ip, header);
+//fprintf(stderr, " -- [%s]\n", header);
+//	}
 
 	header_get_method(header, h_method, sizeof(h_method));
 	header_get_url(header, h_url, sizeof(h_url));
 	header_get_spec(header, h_spec, sizeof(h_spec));
 
+	header_get_field(header, "Host", f_host, sizeof(f_host));
+	header_get_field(header, "User-Agent", f_user_agent, sizeof(f_user_agent));
+	header_get_field(header, "Referer", f_referer, sizeof(f_referer));
+
 	syslog(LOG_INFO, "[%s] METHOD: '%s' URL: '%s' SPEC: '%s'\n", sarg->client_ip, h_method, h_url, h_spec);
+	syslog(LOG_INFO, "[%s] Host: '%s'\n", sarg->client_ip, f_host);
+	syslog(LOG_INFO, "[%s] User-Agent: '%s'\n", sarg->client_ip, f_user_agent);
+	syslog(LOG_INFO, "[%s] Referer: '%s'\n", sarg->client_ip, f_referer);
 
 	if (!strcmp(h_method, "GET") || !strcmp(h_method, "HEAD")) {
 	    char *path;
@@ -267,6 +282,10 @@ static void *server_thread(void *arg)
 	} else if (!strcmp(h_method, "CONNECT")) {
 	    server_tunnel(sarg, h_url);
 	    break;
+	} else if (!strcmp(h_method, "POST")) {
+	    syslog(LOG_INFO, "[%s] http error: Not Implemented\n", sarg->client_ip);
+	    send_error(sarg, 501, "Not Implemented");
+	    break;
 	} else {
 	    syslog(LOG_INFO, "[%s] http error: Not Implemented\n", sarg->client_ip);
 	    send_error(sarg, 501, "Not Implemented");
@@ -322,6 +341,7 @@ int main(int argc, char *argv[])
     int sock_fd, net_fd, optval = 1;
     socklen_t remotelen;
     int cliserv = -1;		/* must be specified on cmd line */
+    int auth_type = 0;
     int use_aes = 0;
     int debug = 0;
     int use_stderr = 0;
@@ -333,7 +353,7 @@ int main(int argc, char *argv[])
     openlog("lilitun", LOG_PID, LOG_DAEMON);
 
     /* Check command line options */
-    while ((option = getopt(argc, argv, "i:sc:p:k:w:n:uahde")) > 0) {
+    while ((option = getopt(argc, argv, "i:sc:p:k:w:n:t:uahde")) > 0) {
 	switch (option) {
 	case 'd':
 	    debug = 1;
@@ -371,6 +391,9 @@ int main(int argc, char *argv[])
 	    break;
 	case 'e':
 	    use_stderr = 1;
+	    break;
+	case 't':
+	    auth_type = atoi(optarg);
 	    break;
 	default:
 	    fprintf(stderr, "Unknown option %c\n", option);
@@ -443,6 +466,7 @@ int main(int argc, char *argv[])
 	sarg->web_prefix = web_prefix;
 	sarg->debug = debug;
 	sarg->mode = cliserv;
+	sarg->auth_type = auth_type; // CONNECT AUTH INT = 0, POST AUTH = 1
 	sarg->ping_time = 10;
 	pthread_mutex_init(&sarg->mutex_net_write, NULL);
 

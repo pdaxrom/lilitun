@@ -23,6 +23,9 @@ typedef struct {
 
     int mode;
 
+    int auth_type;
+    int auth_completed;
+
     char *client_ip;
     char *server_name;
     char *web_prefix;
