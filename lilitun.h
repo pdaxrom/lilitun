@@ -31,12 +31,13 @@ typedef struct {
     char *web_prefix;
 
     int vpn_is_alive;
-    int debug;
     int ping_time;
 } server_arg;
 
 extern char server_id[6];
 extern char client_id[6];
+
+extern int debug;
 
 void dump16(char *ptr);
 void dump_SrcDst(char *p);

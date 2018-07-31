@@ -39,14 +39,14 @@ static int tap2net(server_arg * sarg)
 	return -1;
     }
 
-    if (sarg->debug) {
+    if (debug) {
 	syslog(LOG_DEBUG, "TAP2NET: Read %d bytes from the tap interface\n", nread);
 	dump_SrcDst(buffer + sizeof(*plength));
     }
 
     nread += sizeof(*plength);
 
-    if (sarg->debug) {
+    if (debug) {
 	syslog(LOG_DEBUG, "TAP2NET: Packet size = %d\n", nread);
     }
 
@@ -63,7 +63,7 @@ static int tap2net(server_arg * sarg)
 	    aes_encrypt(sarg->aes_ctx, (uint8 *) buffer + i, (uint8 *) aes_buffer + i);
 	}
 
-	if (sarg->debug) {
+	if (debug) {
 	    syslog(LOG_DEBUG, "TAP2NET: Packet size aligned = %d\n", nread_aligned);
 	}
     }
@@ -79,7 +79,7 @@ static int tap2net(server_arg * sarg)
 	return -1;
     }
 
-    if (sarg->debug) {
+    if (debug) {
 	syslog(LOG_DEBUG, "TAP2NET: Written %d bytes to the network\n", nwrite);
     }
 
@@ -110,7 +110,7 @@ static int net2tap(server_arg * sarg)
 	plength = (uint16_t *) sarg->rbuffer;
     }
 
-    if (sarg->debug) {
+    if (debug) {
 	syslog(LOG_DEBUG, "net2tap(): buffered %d bytes\n", sarg->rbuffered);
     }
 
@@ -121,7 +121,7 @@ static int net2tap(server_arg * sarg)
 	    return -1;
 	}
 
-	if (sarg->debug) {
+	if (debug) {
 	    syslog(LOG_INFO, "net2tap(): read in buffer+%d %d bytes\n", sarg->rbuffered, nread);
 	}
 
@@ -133,7 +133,7 @@ static int net2tap(server_arg * sarg)
     }
 
     if (ntohs(*plength) == 0xffff) {
-	if (sarg->debug) {
+	if (debug) {
 	    syslog(LOG_DEBUG, "Ping packet received\n");
 	}
 	if (sarg->use_aes) {
@@ -145,14 +145,14 @@ static int net2tap(server_arg * sarg)
     } else {
 	nread = ntohs(*plength);
 
-	if (sarg->debug) {
+	if (debug) {
 	    syslog(LOG_DEBUG, "NET2TAP: Packet size = %d\n", nread);
 	}
 
 	if (sarg->use_aes) {
 	    nread_aligned = ((nread - 1) / 16 + 1) * 16;
 
-	    if (sarg->debug) {
+	    if (debug) {
 		syslog(LOG_DEBUG, "NET2TAP: Packet size aligned = %d\n", nread_aligned);
 	    }
 	}
@@ -168,7 +168,7 @@ static int net2tap(server_arg * sarg)
 	    sarg->rbuffered += len;
 	}
 
-	if (sarg->debug) {
+	if (debug) {
 	    syslog(LOG_DEBUG, "NET2TAP: Buffered %d bytes from the network\n", sarg->rbuffered);
 	}
 
@@ -178,7 +178,7 @@ static int net2tap(server_arg * sarg)
 		aes_decrypt(sarg->aes_ctx, (uint8 *) sarg->rbuffer + i, (uint8 *) aes_buffer + i);
 	    }
 
-	    if (sarg->debug) {
+	    if (debug) {
 		dump_SrcDst(aes_buffer + sizeof(*plength));
 	    }
 
@@ -186,7 +186,7 @@ static int net2tap(server_arg * sarg)
 	} else {
 	    /* now buffer[] contains a full packet or frame, write it into the tun/tap interface */
 
-	    if (sarg->debug) {
+	    if (debug) {
 		dump_SrcDst(sarg->rbuffer + sizeof(*plength));
 	    }
 
@@ -206,7 +206,7 @@ static int net2tap(server_arg * sarg)
 	memcpy(sarg->rbuffer, sarg->rbuffer + (sarg->use_aes ? nread_aligned : nread), sarg->rbuffered);
     }
 
-    if (sarg->debug) {
+    if (debug) {
 	syslog(LOG_DEBUG, "NET2TAP: Written %d bytes to the tap interface\n", nwrite);
     }
 
@@ -279,7 +279,7 @@ void *tap2net_thread(void *arg)
 	}
 
 	if (!ret) {
-	    if (sarg->debug) {
+	    if (debug) {
 		syslog(LOG_DEBUG, "Select tap_fd timeout, continue\n");
 	    }
 	    continue;
@@ -356,7 +356,7 @@ void *net2tap_thread(void *arg)
 		break;
 	    }
 
-	    if (sarg->debug) {
+	    if (debug) {
 		syslog(LOG_DEBUG, "Send ping\n");
 	    }
 
@@ -367,7 +367,7 @@ void *net2tap_thread(void *arg)
 	}
 
 	if (!ret) {
-	    if (sarg->debug) {
+	    if (debug) {
 		syslog(LOG_DEBUG, "Select net_fd timeout, continue\n");
 	    }
 	    continue;
@@ -430,13 +430,13 @@ int server_tunnel(server_arg * sarg, char *h_url)
 		return -1;
 	    }
 
-	    if (sarg->debug) {
+	    if (debug) {
 		dump16(aes_tmp);
 	    }
 
 	    aes_decrypt(sarg->aes_ctx, (uint8_t *) aes_tmp, (uint8_t *) tmp);
 
-	    if (sarg->debug) {
+	    if (debug) {
 		dump16(tmp);
 	    }
 
@@ -451,7 +451,8 @@ int server_tunnel(server_arg * sarg, char *h_url)
 
 	/* initialize tun/tap interface */
 	if ((sarg->tap_fd = tun_alloc(sarg->tap_if_name, sarg->tap_flags | IFF_NO_PI | IFF_MULTI_QUEUE)) < 0) {
-	    syslog(LOG_ERR, "[%s] Error connecting to tun/tap interface %s (%s)!\n", sarg->client_ip, sarg->tap_if_name, strerror(errno));
+	    syslog(LOG_ERR, "[%s] Error connecting to tun/tap interface %s (%s)!\n", sarg->client_ip, sarg->tap_if_name,
+		   strerror(errno));
 	    return -1;
 	}
 
@@ -478,104 +479,193 @@ int server_tunnel(server_arg * sarg, char *h_url)
 }
 
 /**************************************************************************
- * client_connection:                                                       *
+ * send_request_and_get_header:                                           *
  **************************************************************************/
-int client_tunnel(server_arg * sarg)
+static int send_http_request_and_get_response(server_arg *sarg, char *req, char *body, int body_len, char *resp, int resp_len)
 {
-    char header[2048];
+	int nread;
+
+	if (cwrite(sarg->net_fd, req, strlen(req)) != strlen(req)) {
+	    syslog(LOG_ERR, "Can not send request (%s)\n", strerror(errno));
+	    return -1;
+	}
+
+	if (body && body_len > 0) {
+	    if (cwrite(sarg->net_fd, body, body_len) != body_len) {
+		syslog(LOG_ERR, "Can not send request body (%s)\n", strerror(errno));
+		return -1;
+	    }
+	}
+
+	nread = cread(sarg->net_fd, resp, resp_len - 1);
+	if (nread <= 0) {
+	    syslog(LOG_ERR, "Can not read response (%s)\n", strerror(errno));
+	    return -1;
+	}
+
+	resp[nread] = 0;
+
+	return nread;
+}
+
+/**************************************************************************
+ * check_response_status:                                                 *
+ **************************************************************************/
+static int check_http_response(char *resp, char *code, char *status)
+{
     char h_method[16];
     char h_url[256];
     char h_spec[16];
 
-    static char *req = "CONNECT / HTTP/1.1\n\n";
+    header_get_method(resp, h_method, sizeof(h_method));
+    header_get_url(resp, h_url, sizeof(h_url));
+    header_get_spec(resp, h_spec, sizeof(h_spec));
 
-    if (cwrite(sarg->net_fd, req, strlen(req)) != strlen(req)) {
-	syslog(LOG_ERR, "Can not send data in client_connection (%s)\n", strerror(errno));
-	return 1;
+    if (debug) {
+	syslog(LOG_DEBUG, "RESPONSE: '%s' STATUS: '%s' MESSAGE: '%s'\n", h_method, h_url, h_spec);
     }
 
-    int nread = cread(sarg->net_fd, header, sizeof(header));
+    return !strcmp(h_method, "HTTP/1.1") && !strcmp(h_url, code) && !strcmp(h_spec, status);
+}
+
+int check_server_id_and_reply(aes_context *ctx, uint8_t *buf_aes)
+{
+    uint8_t buf[16];
+
+    if (debug) {
+	dump16((char *)buf_aes);
+    }
+
+    aes_decrypt(ctx, buf_aes, buf);
+
+    if (debug) {
+	dump16((char *) buf);
+    }
+
+    if (!strncmp((char *) buf, server_id, sizeof(server_id))) {
+	syslog(LOG_INFO, "Decrypted server_id is okay!\n");
+    } else {
+	syslog(LOG_INFO, "Wrong decrypted server_id\n");
+	return -1;
+    }
+
+    memcpy(buf, client_id, sizeof(client_id));
+
+    if (debug) {
+	dump16((char *) buf);
+    }
+
+    aes_encrypt(ctx, (uint8_t *) buf, (uint8_t *) buf_aes);
+
+    if (debug) {
+	dump16((char *) buf_aes);
+    }
+
+    return 0;
+}
+
+/**************************************************************************
+ * client_connection:                                                       *
+ **************************************************************************/
+int client_tunnel(server_arg * sarg)
+{
+    int nread;
+    char header[2048];
+
+    if (sarg->auth_type != 0) {
+	static const char *req = "HEAD / HTTP/1.1\n\n";
+
+	nread = send_http_request_and_get_response(sarg, (char *) req, NULL, 0, header, sizeof(header));
+	if (nread <= 0) {
+	    syslog(LOG_ERR, "Send HEAD\n");
+	    return -1;
+	}
+
+	if (check_http_response(header, "200", "OK")) {
+	    char f_etag[64];
+	    uint8_t tmp[16];
+	    header_get_field(header, "ETag", f_etag, sizeof(f_etag));
+	    if (debug) {
+		syslog(LOG_DEBUG, "Etag = %s\n", f_etag);
+	    }
+
+	    hex2buf(f_etag + 1, 16, (uint8_t *)tmp);
+
+	    if (check_server_id_and_reply(sarg->aes_ctx, tmp)) {
+		return -1;
+	    }
+
+	    buf2hex(tmp, 16, f_etag + 1);
+
+	    static const char *req = "POST / HTTP/1.1\nContent-Length: 32\nContent-Type: text/plain\n\n";
+
+	    nread = send_http_request_and_get_response(sarg, (char *) req, f_etag + 1, 32, header, sizeof(header));
+	    if (nread <= 0) {
+		syslog(LOG_ERR, "Send POST\n");
+		return -1;
+	    }
+
+	    if (check_http_response(header, "200", "OK")) {
+		return -1;
+	    } else {
+		syslog(LOG_ERR, "Server rejected authorization\n");
+		return -1;
+	    }
+
+	} else {
+	    syslog(LOG_INFO, "HEAD Bad response!\n");
+	    return -1;
+	}
+    }
+
+    static const char *req = "CONNECT / HTTP/1.1\n\n";
+
+    nread = send_http_request_and_get_response(sarg, (char *) req, NULL, 0, header, sizeof(header));
     if (nread <= 0) {
-	syslog(LOG_ERR, "No data read in client_connection (%s)\n", strerror(errno));
-	return 1;
+	syslog(LOG_ERR, "Send CONNECT\n");
+	return -1;
     }
 
-    if (sarg->debug) {
-	syslog(LOG_DEBUG, "HTTP read: [\n%s\n]\n", header);
-    }
-
-    header_get_method(header, h_method, sizeof(h_method));
-    header_get_url(header, h_url, sizeof(h_url));
-    header_get_spec(header, h_spec, sizeof(h_spec));
-
-    syslog(LOG_INFO, "RESPONSE: '%s' STATUS: '%s' MESSAGE: '%s'\n", h_method, h_url, h_spec);
-
-    if (!strcmp(h_method, "HTTP/1.1") && !strcmp(h_url, "200") && !strcmp(h_spec, "OK")) {
+    if (check_http_response(header, "200", "OK")) {
 	pthread_t net2tap_tid;
 	pthread_t tap2net_tid;
 
 	if (sarg->auth_type == 0) {
-	    char tmp[16];
-	    char aes_tmp[16];
+	    uint8_t tmp[16];
 
 	    char *ptr = strstr(header, "\n\n");
 	    if (!ptr) {
 		syslog(LOG_ERR, "Incomplete response header\n");
-		return 1;
+		return -1;
 	    }
 
 	    ptr += 2;
 	    int received = nread - (ptr - header);
 
 	    if (received < 16) {
-		nread = cread(sarg->net_fd, aes_tmp, sizeof(aes_tmp) - received);
+		nread = cread(sarg->net_fd, (char *) tmp, sizeof(tmp) - received);
 		if (nread <= 0) {
 		    syslog(LOG_ERR, "no data read in client_connection (%s)\n", strerror(errno));
-		    return 1;
+		    return -1;
 		}
 	    } else {
-		memcpy(aes_tmp, ptr, 16);
+		memcpy(tmp, ptr, 16);
 	    }
 
-	    if (sarg->debug) {
-		dump16(aes_tmp);
+	    if (check_server_id_and_reply(sarg->aes_ctx, tmp)) {
+		return -1;
 	    }
 
-	    aes_decrypt(sarg->aes_ctx, (uint8_t *) aes_tmp, (uint8_t *) tmp);
-
-	    if (sarg->debug) {
-		dump16(tmp);
-	    }
-
-	    if (!strncmp(tmp, server_id, sizeof(server_id))) {
-		syslog(LOG_INFO, "Decrypted server_id is okay!\n");
-	    } else {
-		syslog(LOG_INFO, "Wrong decrypted server_id\n");
-		return 1;
-	    }
-
-	    memcpy(tmp, client_id, sizeof(client_id));
-
-	    if (sarg->debug) {
-		dump16(tmp);
-	    }
-
-	    aes_encrypt(sarg->aes_ctx, (uint8_t *) tmp, (uint8_t *) aes_tmp);
-
-	    if (sarg->debug) {
-		dump16(aes_tmp);
-	    }
-
-	    if (cwrite(sarg->net_fd, aes_tmp, sizeof(aes_tmp)) != sizeof(aes_tmp)) {
+	    if (cwrite(sarg->net_fd, (char *) tmp, sizeof(tmp)) != sizeof(tmp)) {
 		syslog(LOG_ERR, "Error send client_id (%s)\n", strerror(errno));
-		return 1;
+		return -1;
 	    }
 	}
 
 	/* initialize tun/tap interface */
 	if ((sarg->tap_fd = tun_alloc(sarg->tap_if_name, sarg->tap_flags | IFF_NO_PI)) < 0) {
 	    syslog(LOG_ERR, "Error connecting to tun/tap interface %s (%s)!\n", sarg->tap_if_name, strerror(errno));
-	    return 1;
+	    return -1;
 	}
 
 	syslog(LOG_INFO, "Successfully connected to interface %s\n", sarg->tap_if_name);

@@ -88,9 +88,28 @@ char *url_get_path(char *url, char *path, int n)
     return copy_str(path, n, url, i);
 }
 
-int generate_session_key(server_arg * sarg)
+#define NIB2HEX(b)	(((b) < 10) ? ('0' + (b)) : ('a' + (b) - 10))
+#define HEX2NIB(h)	(((h) >= '0' && (h) <= '9') ? ((h) - '0') : ((h) >= 'A' && (h) <= 'F') ? ((h) - 'A' + 10) : ((h) >= 'a' && (h) <= 'f') ? ((h) - 'a' + 10) : 0)
+
+void buf2hex(uint8_t *buf, int n, char *hex)
 {
     int i;
+    for (i = 0; i < n; i++) {
+	hex[i * 2 + 0] = NIB2HEX(buf[i] >> 4);
+	hex[i * 2 + 1] = NIB2HEX(buf[i] & 0x0f);
+    }
+}
+
+void hex2buf(char *hex, int n, uint8_t *buf)
+{
+    int i;
+    for (i = 0; i < n; i++) {
+	buf[i] = (HEX2NIB((uint8_t) hex[i * 2 + 0]) << 4) | HEX2NIB((uint8_t) hex[i * 2 + 1]);
+    }
+}
+
+int generate_session_key(server_arg * sarg)
+{
     sarg->session_key = malloc(16);
     if (sarg->use_aes) {
 	sarg->session_key_aes = malloc(16);
@@ -107,24 +126,22 @@ int generate_session_key(server_arg * sarg)
     // Store random key as session id
     memcpy(sarg->session_id, sarg->session_key + sizeof(server_id), 16 - sizeof(server_id));
 
-    if (sarg->debug) {
+    if (debug) {
 	dump16(sarg->session_key);
     }
 
     if (sarg->use_aes) {
 	aes_encrypt(sarg->aes_ctx, (uint8_t *) sarg->session_key, (uint8_t *) sarg->session_key_aes);
 
-	if (sarg->debug) {
+	if (debug) {
 	    dump16(sarg->session_key_aes);
 	}
     }
 
-    for (i = 0; i < 16; i++) {
-	snprintf(sarg->session_key_hex + i * 2, 3, "%02X",
-		 (uint8_t) (sarg->use_aes ? sarg->session_key_aes[i] : sarg->session_key[i]));
-    }
+    buf2hex((uint8_t *) (sarg->use_aes ? sarg->session_key_aes : sarg->session_key), 16, sarg->session_key_hex);
+    sarg->session_key_hex[16 * 2] = 0;
 
-    if (sarg->debug) {
+    if (debug) {
 	syslog(LOG_DEBUG, "Session key hex: %s\n", sarg->session_key_hex);
     }
 

@@ -36,14 +36,14 @@ static int tap2net(server_arg * sarg)
 	return -1;
     }
 
-    if (sarg->debug) {
+    if (debug) {
 	syslog(LOG_DEBUG, "TAP2NET: Read %d bytes from the tap interface\n", nread);
 	dump_SrcDst(buffer + sizeof(*plength));
     }
 
     nread += sizeof(*plength);
 
-    if (sarg->debug) {
+    if (debug) {
 	syslog(LOG_DEBUG, "TAP2NET: Packet size = %d\n", nread);
     }
 
@@ -60,7 +60,7 @@ static int tap2net(server_arg * sarg)
 	    aes_encrypt(sarg->aes_ctx, (uint8 *) buffer + i, (uint8 *) aes_buffer + i);
 	}
 
-	if (sarg->debug) {
+	if (debug) {
 	    syslog(LOG_DEBUG, "TAP2NET: Packet size aligned = %d\n", nread_aligned);
 	}
     }
@@ -78,7 +78,7 @@ static int tap2net(server_arg * sarg)
     }
 
 
-    if (sarg->debug) {
+    if (debug) {
 	syslog(LOG_DEBUG, "TAP2NET: Written %d bytes to the network\n", nwrite);
     }
 
@@ -109,7 +109,7 @@ static int net2tap(server_arg * sarg)
 	plength = (uint16_t *) sarg->rbuffer;
     }
 
-    if (sarg->debug) {
+    if (debug) {
 	syslog(LOG_DEBUG, "net2tap(): buffered %d bytes\n", sarg->rbuffered);
     }
 
@@ -120,7 +120,7 @@ static int net2tap(server_arg * sarg)
 	    return -1;
 	}
 
-	if (sarg->debug) {
+	if (debug) {
 	    syslog(LOG_INFO, "net2tap(): read in buffer+%d %d bytes\n", sarg->rbuffered, nread);
 	}
 
@@ -132,7 +132,7 @@ static int net2tap(server_arg * sarg)
     }
 
     if (ntohs(*plength) == 0xffff) {
-	if (sarg->debug) {
+	if (debug) {
 	    syslog(LOG_DEBUG, "Ping packet received\n");
 	}
 	if (sarg->use_aes) {
@@ -144,14 +144,14 @@ static int net2tap(server_arg * sarg)
     } else {
 	nread = ntohs(*plength);
 
-	if (sarg->debug) {
+	if (debug) {
 	    syslog(LOG_DEBUG, "NET2TAP: Packet size = %d\n", nread);
 	}
 
 	if (sarg->use_aes) {
 	    nread_aligned = ((nread - 1) / 16 + 1) * 16;
 
-	    if (sarg->debug) {
+	    if (debug) {
 		syslog(LOG_DEBUG, "NET2TAP: Packet size aligned = %d\n", nread_aligned);
 	    }
 	}
@@ -167,7 +167,7 @@ static int net2tap(server_arg * sarg)
 	    sarg->rbuffered += len;
 	}
 
-	if (sarg->debug) {
+	if (debug) {
 	    syslog(LOG_DEBUG, "NET2TAP: Buffered %d bytes from the network\n", sarg->rbuffered);
 	}
 
@@ -177,7 +177,7 @@ static int net2tap(server_arg * sarg)
 		aes_decrypt(sarg->aes_ctx, (uint8 *) sarg->rbuffer + i, (uint8 *) aes_buffer + i);
 	    }
 
-	    if (sarg->debug) {
+	    if (debug) {
 		dump_SrcDst(aes_buffer + sizeof(*plength));
 	    }
 
@@ -185,7 +185,7 @@ static int net2tap(server_arg * sarg)
 	} else {
 	    /* now buffer[] contains a full packet or frame, write it into the tun/tap interface */
 
-	    if (sarg->debug) {
+	    if (debug) {
 		dump_SrcDst(sarg->rbuffer + sizeof(*plength));
 	    }
 
@@ -205,7 +205,7 @@ static int net2tap(server_arg * sarg)
 	memcpy(sarg->rbuffer, sarg->rbuffer + (sarg->use_aes ? nread_aligned : nread), sarg->rbuffered);
     }
 
-    if (sarg->debug) {
+    if (debug) {
 	syslog(LOG_DEBUG, "NET2TAP: Written %d bytes to the tap interface\n", nwrite);
     }
 

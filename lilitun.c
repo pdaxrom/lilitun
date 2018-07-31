@@ -59,6 +59,8 @@ char client_id[6] = "htilil";
 aes_context aes_ctx;
 uint8 aes_key[256];
 
+int debug = 0;
+
 /*
 
  */
@@ -92,9 +94,10 @@ void dump_SrcDst(char *p)
  **************************************************************************/
 int init_aes(char *keyfile)
 {
+    int size;
     FILE *inf = fopen(keyfile, "rb");
     if (inf) {
-	int size = fread(aes_key, 1, sizeof(aes_key), inf);
+	size = fread(aes_key, 1, sizeof(aes_key), inf);
 	if ((size != 16) && (size != 24) && (size != 32)) {
 	    syslog(LOG_ERR, "Key must be 16, 24 or 32 bytes! AES disabled.\n");
 	    fclose(inf);
@@ -107,7 +110,7 @@ int init_aes(char *keyfile)
 	syslog(LOG_ERR, "Can't open key file! AES disabled.\n");
 	return 0;
     }
-    return 1;
+    return size;
 }
 
 /**************************************************************************
@@ -207,7 +210,7 @@ static void *server_thread(void *arg)
 
 	header[nread] = 0;
 
-//	if (sarg->debug) {
+//	if (debug) {
 //	    syslog(LOG_DEBUG, "[%s] HTTP read: [\n%s\n]\n", sarg->client_ip, header);
 //fprintf(stderr, " -- [%s]\n", header);
 //	}
@@ -343,7 +346,6 @@ int main(int argc, char *argv[])
     int cliserv = -1;		/* must be specified on cmd line */
     int auth_type = 0;
     int use_aes = 0;
-    int debug = 0;
     int use_stderr = 0;
     char *web_prefix = "/opt/lilitun";
     char *server_name = "Apache/2.4.18 (Ubuntu)";
@@ -464,7 +466,6 @@ int main(int argc, char *argv[])
 	sarg->aes_ctx = &aes_ctx;
 	sarg->server_name = server_name;
 	sarg->web_prefix = web_prefix;
-	sarg->debug = debug;
 	sarg->mode = cliserv;
 	sarg->auth_type = auth_type; // CONNECT AUTH INT = 0, POST AUTH = 1
 	sarg->ping_time = 10;
@@ -525,7 +526,6 @@ int main(int argc, char *argv[])
 	    sarg->client_ip = strdup(inet_ntoa(remote.sin_addr));
 	    sarg->server_name = server_name;
 	    sarg->web_prefix = web_prefix;
-	    sarg->debug = debug;
 	    sarg->mode = cliserv;
 	    sarg->ping_time = 10;
 	    pthread_mutex_init(&sarg->mutex_net_write, NULL);
