@@ -85,8 +85,9 @@ void dump16(char *ptr)
 
 void dump_SrcDst(char *p)
 {
-    uint8_t *ptr = (uint8_t *)p;
-    syslog(LOG_DEBUG, "Packet: Src: %d.%d.%d.%d Dst: %d.%d.%d.%d\n", ptr[12], ptr[13], ptr[14], ptr[15], ptr[16], ptr[17], ptr[18], ptr[19]);
+    uint8_t *ptr = (uint8_t *) p;
+    syslog(LOG_DEBUG, "Packet: Src: %d.%d.%d.%d Dst: %d.%d.%d.%d\n", ptr[12], ptr[13], ptr[14], ptr[15], ptr[16], ptr[17],
+	   ptr[18], ptr[19]);
 }
 
 /**************************************************************************
@@ -210,10 +211,10 @@ static void *server_thread(void *arg)
 
 	header[nread] = 0;
 
-//	if (debug) {
-//	    syslog(LOG_DEBUG, "[%s] HTTP read: [\n%s\n]\n", sarg->client_ip, header);
+//      if (debug) {
+//          syslog(LOG_DEBUG, "[%s] HTTP read: [\n%s\n]\n", sarg->client_ip, header);
 //fprintf(stderr, " -- [%s]\n", header);
-//	}
+//      }
 
 	header_get_method(header, h_method, sizeof(h_method));
 	header_get_url(header, h_url, sizeof(h_url));
@@ -286,8 +287,77 @@ static void *server_thread(void *arg)
 	    server_tunnel(sarg, h_url);
 	    break;
 	} else if (!strcmp(h_method, "POST")) {
-	    syslog(LOG_INFO, "[%s] http error: Not Implemented\n", sarg->client_ip);
-	    send_error(sarg, 501, "Not Implemented");
+	    if (!strcmp(h_url, "/")) {
+		uint8_t buf[16];
+		uint8_t buf_aes[16];
+		int body_size;
+		char *ptr = strstr(header, "\n\n");
+		if (!ptr) {
+		    syslog(LOG_ERR, "Incomplete header received\n");
+		    break;
+		}
+
+		if (ptr[2] != 0) {
+		    if (debug) {
+			syslog(LOG_DEBUG, "[%s] Header has body data %ld bytes '%s'\n", sarg->client_ip, strlen(ptr + 2),
+			       ptr + 2);
+		    }
+		}
+
+		body_size = strlen(ptr + 2);
+
+		if (debug) {
+		    syslog(LOG_DEBUG, "[%s] POST read %d bytes of body\n", sarg->client_ip, body_size);
+		}
+
+		while (body_size < 32) {
+		    int len = cread(sarg->net_fd, ptr + 2 + body_size, 32 - body_size);
+		    if (len <= 0) {
+			syslog(LOG_ERR, "[%s] Can not read POST body\n", sarg->client_ip);
+			break;
+		    }
+		    body_size += len;
+		}
+
+		if (body_size != 32) {
+		    break;
+		}
+
+		ptr[2 + body_size] = 0;
+
+		if (debug) {
+		    syslog(LOG_DEBUG, "[%s] post data '%s'\n", sarg->client_ip, ptr + 2);
+		}
+
+		hex2buf(ptr + 2, 16, buf_aes);
+
+		if (debug) {
+		    dump16((char *)buf_aes);
+		}
+
+		aes_decrypt(sarg->aes_ctx, buf_aes, buf);
+
+		if (debug) {
+		    dump16((char *)buf);
+		}
+
+		if (!strncmp((char *)buf, client_id, sizeof(client_id))
+		    && !memcmp(buf + sizeof(server_id), sarg->session_id, 16 - sizeof(server_id))) {
+		    sarg->auth_completed = 1;
+
+		    syslog(LOG_INFO, "[%s] Decrypted client_id and session_id are okay!\n", sarg->client_ip);
+
+		    syslog(LOG_INFO, "[%s] POST OK\n", sarg->client_ip);
+		    send_error(sarg, 200, "OK");
+
+		    continue;
+		} else {
+		    syslog(LOG_INFO, "[%s] wrong client_id or session_id, connection closed\n", sarg->client_ip);
+		}
+	    }
+
+	    syslog(LOG_INFO, "[%s] http error: Forbidden\n", sarg->client_ip);
+	    send_error(sarg, 403, "Forbidden");
 	    break;
 	} else {
 	    syslog(LOG_INFO, "[%s] http error: Not Implemented\n", sarg->client_ip);
@@ -316,7 +386,9 @@ static void *server_thread(void *arg)
 void usage(void)
 {
     fprintf(stderr, "Usage:\n");
-    fprintf(stderr, "%s -i <ifacename> [-s|-c <serverIP>] [-p <port>] [-k <keyfile>] [-u|-a] [-w /path/to/www] [-n <webserver name>] [-d] [-e]\n", progname);
+    fprintf(stderr,
+	    "%s -i <ifacename> [-s|-c <serverIP>] [-p <port>] [-k <keyfile>] [-u|-a] [-w /path/to/www] [-n <webserver name>] [-d] [-e]\n",
+	    progname);
     fprintf(stderr, "%s -h\n", progname);
     fprintf(stderr, "\n");
     fprintf(stderr, "-i <ifacename>: Name of interface to use (mandatory)\n");
@@ -467,7 +539,7 @@ int main(int argc, char *argv[])
 	sarg->server_name = server_name;
 	sarg->web_prefix = web_prefix;
 	sarg->mode = cliserv;
-	sarg->auth_type = auth_type; // CONNECT AUTH INT = 0, POST AUTH = 1
+	sarg->auth_type = auth_type;	// CONNECT AUTH INT = 0, POST AUTH = 1
 	sarg->ping_time = 10;
 	pthread_mutex_init(&sarg->mutex_net_write, NULL);
 

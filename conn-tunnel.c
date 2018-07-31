@@ -606,7 +606,24 @@ int client_tunnel(server_arg * sarg)
 	    }
 
 	    if (check_http_response(header, "200", "OK")) {
-		return -1;
+		char f_len[16];
+		int body_size;
+		syslog(LOG_INFO, "Server authorization completed\n");
+
+		if (header_get_field(header, "Content-Length", f_len, sizeof(f_len))) {
+		    int nread = 0;
+		    body_size = atoi(f_len);
+		    if (debug) {
+			syslog(LOG_DEBUG, "Response body length %d bytes\n", body_size);
+		    }
+		    while (nread < body_size) {
+			int len = cread(sarg->net_fd, header + nread, body_size - nread);
+			nread += len;
+		    }
+		    if (debug) {
+			syslog(LOG_DEBUG, "Skip response body\n");
+		    }
+		}
 	    } else {
 		syslog(LOG_ERR, "Server rejected authorization\n");
 		return -1;
