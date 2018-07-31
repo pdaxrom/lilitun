@@ -220,14 +220,18 @@ static void *server_thread(void *arg)
 	header_get_url(header, h_url, sizeof(h_url));
 	header_get_spec(header, h_spec, sizeof(h_spec));
 
-	header_get_field(header, "Host", f_host, sizeof(f_host));
-	header_get_field(header, "User-Agent", f_user_agent, sizeof(f_user_agent));
-	header_get_field(header, "Referer", f_referer, sizeof(f_referer));
-
 	syslog(LOG_INFO, "[%s] METHOD: '%s' URL: '%s' SPEC: '%s'\n", sarg->client_ip, h_method, h_url, h_spec);
-	syslog(LOG_INFO, "[%s] Host: '%s'\n", sarg->client_ip, f_host);
-	syslog(LOG_INFO, "[%s] User-Agent: '%s'\n", sarg->client_ip, f_user_agent);
-	syslog(LOG_INFO, "[%s] Referer: '%s'\n", sarg->client_ip, f_referer);
+
+	if (header_get_field(header, "Host", f_host, sizeof(f_host))) {
+	    syslog(LOG_INFO, "[%s] Host: '%s'\n", sarg->client_ip, f_host);
+	}
+	if (header_get_field(header, "User-Agent", f_user_agent, sizeof(f_user_agent))) {
+	    syslog(LOG_INFO, "[%s] User-Agent: '%s'\n", sarg->client_ip, f_user_agent);
+	}
+
+	if (header_get_field(header, "Referer", f_referer, sizeof(f_referer))) {
+	    syslog(LOG_INFO, "[%s] Referer: '%s'\n", sarg->client_ip, f_referer);
+	}
 
 	if (!strcmp(h_method, "GET") || !strcmp(h_method, "HEAD")) {
 	    char *path;
@@ -255,7 +259,7 @@ static void *server_thread(void *arg)
 		    syslog(LOG_ERR, "[%s] %s %d: stat() (%s)\n", sarg->client_ip, __FILE__, __LINE__, strerror(errno));
 		} else {
 		    if ((sb.st_mode & S_IFMT) == S_IFDIR) {
-			char *tmp = realloc(file_path, strlen(file_path) + 11);	// file_path + "/index.html"
+			char *tmp = realloc(file_path, strlen(file_path) + 11 + 1); // file_path + "/index.html" + '0'
 			if (tmp) {
 			    file_path = tmp;
 			} else {
@@ -290,69 +294,89 @@ static void *server_thread(void *arg)
 	    if (!strcmp(h_url, "/")) {
 		uint8_t buf[16];
 		uint8_t buf_aes[16];
-		int body_size;
+		char f_len[16];
+		int body_size = 0;
+		int body_len;
+
+		if (header_get_field(header, "Content-Length", f_len, sizeof(f_len))) {
+		    body_size = atoi(f_len);
+		}
+
 		char *ptr = strstr(header, "\n\n");
+		if (!ptr) {
+		    ptr = strstr(header, "\r\n\r\n");
+		    if (ptr) {
+			ptr += 4;
+		    }
+		} else {
+		    ptr += 2;
+		}
 		if (!ptr) {
 		    syslog(LOG_ERR, "Incomplete header received\n");
 		    break;
 		}
 
-		if (ptr[2] != 0) {
+		if (ptr[0] != 0) {
 		    if (debug) {
-			syslog(LOG_DEBUG, "[%s] Header has body data %ld bytes '%s'\n", sarg->client_ip, strlen(ptr + 2),
-			       ptr + 2);
+			syslog(LOG_DEBUG, "[%s] Header has body data %ld bytes '%s'\n", sarg->client_ip, strlen(ptr), ptr);
 		    }
 		}
 
-		body_size = strlen(ptr + 2);
+		body_len = strlen(ptr);
 
 		if (debug) {
-		    syslog(LOG_DEBUG, "[%s] POST read %d bytes of body\n", sarg->client_ip, body_size);
+		    syslog(LOG_DEBUG, "[%s] POST read %d bytes of body (need %d bytes)\n", sarg->client_ip, body_len, body_size);
 		}
 
-		while (body_size < 32) {
-		    int len = cread(sarg->net_fd, ptr + 2 + body_size, 32 - body_size);
+		if (strlen(header) + body_size > sizeof(header)) {
+		    body_len = sizeof(header) - strlen(header);
+		}
+
+		while (body_len < body_size) {
+		    int len = cread(sarg->net_fd, ptr + body_len, body_size - body_len);
 		    if (len <= 0) {
 			syslog(LOG_ERR, "[%s] Can not read POST body\n", sarg->client_ip);
 			break;
 		    }
-		    body_size += len;
+		    body_len += len;
 		}
 
-		if (body_size != 32) {
+		if (body_len != body_size) {
 		    break;
 		}
 
-		ptr[2 + body_size] = 0;
+		ptr[body_len] = 0;
 
 		if (debug) {
-		    syslog(LOG_DEBUG, "[%s] post data '%s'\n", sarg->client_ip, ptr + 2);
+		    syslog(LOG_DEBUG, "[%s] post data '%s'\n", sarg->client_ip, ptr);
 		}
 
-		hex2buf(ptr + 2, 16, buf_aes);
+		if (body_len == 32) {
+		    hex2buf(ptr, 16, buf_aes);
 
-		if (debug) {
-		    dump16((char *)buf_aes);
-		}
+		    if (debug) {
+			dump16((char *)buf_aes);
+		    }
 
-		aes_decrypt(sarg->aes_ctx, buf_aes, buf);
+		    aes_decrypt(sarg->aes_ctx, buf_aes, buf);
 
-		if (debug) {
-		    dump16((char *)buf);
-		}
+		    if (debug) {
+			dump16((char *)buf);
+		    }
 
-		if (!strncmp((char *)buf, client_id, sizeof(client_id))
-		    && !memcmp(buf + sizeof(server_id), sarg->session_id, 16 - sizeof(server_id))) {
-		    sarg->auth_completed = 1;
+		    if (!strncmp((char *)buf, client_id, sizeof(client_id))
+			&& !memcmp(buf + sizeof(server_id), sarg->session_id, 16 - sizeof(server_id))) {
+			sarg->auth_completed = 1;
 
-		    syslog(LOG_INFO, "[%s] Decrypted client_id and session_id are okay!\n", sarg->client_ip);
+			syslog(LOG_INFO, "[%s] Decrypted client_id and session_id are okay!\n", sarg->client_ip);
 
-		    syslog(LOG_INFO, "[%s] POST OK\n", sarg->client_ip);
-		    send_error(sarg, 200, "OK");
+			syslog(LOG_INFO, "[%s] POST OK\n", sarg->client_ip);
+			send_error(sarg, 200, "OK");
 
-		    continue;
-		} else {
-		    syslog(LOG_INFO, "[%s] wrong client_id or session_id, connection closed\n", sarg->client_ip);
+			continue;
+		    } else {
+			syslog(LOG_INFO, "[%s] wrong client_id or session_id, connection closed\n", sarg->client_ip);
+		    }
 		}
 	    }
 
@@ -369,7 +393,6 @@ static void *server_thread(void *arg)
     free_session_key(sarg);
 
     close(sarg->net_fd);
-    close(sarg->tap_fd);
 
     syslog(LOG_INFO, "[%s] Server thread finished!\n", sarg->client_ip);
 

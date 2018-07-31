@@ -468,6 +468,9 @@ int server_tunnel(server_arg * sarg, char *h_url)
 	    (void)pthread_join(net2tap_tid, NULL);
 	    (void)pthread_join(tap2net_tid, NULL);
 	}
+
+	close(sarg->tap_fd);
+
 	syslog(LOG_INFO, "[%s] VPN connection finished\n", sarg->client_ip);
     } else {
 	syslog(LOG_INFO, "[%s] http error: Forbidden\n", sarg->client_ip);
