@@ -203,7 +203,7 @@ static int net2tap(server_arg * sarg)
     sarg->rbuffered -= (sarg->use_aes ? nread_aligned : nread);
 
     if (sarg->rbuffered > 0) {
-	memcpy(sarg->rbuffer, sarg->rbuffer + (sarg->use_aes ? nread_aligned : nread), sarg->rbuffered);
+	memmove(sarg->rbuffer, sarg->rbuffer + (sarg->use_aes ? nread_aligned : nread), sarg->rbuffered);
     }
 
     if (debug) {
